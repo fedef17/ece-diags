@@ -1,0 +1,21 @@
+#### General config
+# Experiments to check and compare
+exps: [tu7b, T009, TN10]
+
+# Folder containing simulations (can be a template to fill with 'user')
+cart_exp: '/ec/res4/scratch/{}/ece4/'
+
+# User (only used to complete cart_exp template). can be a list, if exps not all by same user. If empty, assumes current user
+user: 
+
+# Experiments to read again (if still running)
+read_again: []
+
+# output folder (some nc files for every experiments are saved, and figures)
+cart_out: './output/'
+
+#### Specific configs (mainly for plots)
+imbalance: -0.75 # this is for TL63-ORCA2. change to 0 for TL255-eORCA1 (need to check exact value, but small)
+
+# experiment to compare with (for plots)
+ref_exp: 'TN10'

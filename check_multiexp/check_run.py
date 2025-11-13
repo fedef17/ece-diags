@@ -1,23 +1,13 @@
-# import os, dask
-# os.environ["OMP_NUM_THREADS"] = "1"
-# os.environ["OPENBLAS_NUM_THREADS"] = "1"
-# os.environ["MKL_NUM_THREADS"] = "1"
-# os.environ["NUMEXPR_NUM_THREADS"] = "1"
-# dask.config.set(scheduler='single-threaded')
-
 import xarray as xr
 from matplotlib import pyplot as plt
 import numpy as np
+import os
 import pandas as pd
-import os 
 
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-import xesmf as xe
-import cartopy.crs as ccrs
-import matplotlib.pyplot as plt
 
 import glob
 
@@ -155,115 +145,7 @@ def global_mean(ds, compute = True):
     if compute:
         ds_mean = ds_mean.compute()
 
-<<<<<<< HEAD
     return ds_mean
-=======
-    filz_exp = dict()
-    filz_amoc = dict()
-    filz_nemo = dict()
-
-    for exp, us in zip(exps, user):
-        cart = f'{cart_exp.format(us)}/{exp}/output/oifs/'
-        filz = cart + f'{exp}_atm_cmip6_1m_*.nc'
-        filz_exp[exp] = filz
-
-    for exp, us in zip(exps, user):
-        cart = f'{cart_exp.format(us)}/{exp}/output/nemo/'
-        filz = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
-        filz_amoc[exp] = filz
-
-        filz = cart + f'{exp}_oce_1m_T_*.nc'
-        filz_nemo[exp] = filz
-
-    atmmean_exp = dict()
-    atmclim_exp = dict()
-    oceclim = dict()
-    amoc_mean_exp = dict()
-    amoc_ts_exp = dict()
-
-    for exp in exps:
-        print(exp)
-        coupled = False
-        if len(glob.glob(filz_nemo[exp])) > 0:
-            print('coupled')
-            coupled = True
-        else:
-            print(f'NO files matching pattern: {filz_nemo[exp]}. Assuming atm-only')
-
-        if os.path.exists(cart_out + f'clim_tuning_{exp}.nc') and exp not in read_again:
-            atmclim_exp[exp] = xr.open_dataset(cart_out + f'clim_tuning_{exp}.nc')
-            atmmean_exp[exp] = xr.open_dataset(cart_out + f'mean_tuning_{exp}.nc')
-            
-            if coupled:
-                oceclim[exp] = xr.open_dataset(cart_out + f'oce_tuning_{exp}.nc')
-        else:
-            try:
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
-            except OSError as err:
-                print(err)
-                print('Run still ongoing, removing last year')
-                # Still running, remove last year
-                fils = glob.glob(filz_exp[exp])
-                fils.sort()
-                filz_exp[exp] = fils[:-1]
-
-                if coupled:
-                    fils = glob.glob(filz_nemo[exp])
-                    fils.sort()
-                    filz_nemo[exp] = fils[:-1]
-
-                    fils = glob.glob(filz_amoc[exp])
-                    fils.sort()
-                    filz_amoc[exp] = fils[:-1]
-
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
-            
-            ds = ds.rename({'time_counter': 'time'})
-            ds = ds[atmvars].groupby('time.year').mean()     
-
-            atmclim_exp[exp] = ds.isel(year = slice(-20, None)).mean('year').compute()
-            atmmean_exp[exp] = global_mean(ds, compute = True)
-            atmclim_exp[exp].to_netcdf(cart_out + f'clim_tuning_{exp}.nc')
-            atmmean_exp[exp].to_netcdf(cart_out + f'mean_tuning_{exp}.nc')
-
-            if coupled:
-                ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks = {'time_counter': 240})
-                ds = ds.rename({'time_counter': 'time'})
-                ds = ds[ocevars].groupby('time.year').mean()
-
-                oceclim[exp] = ds.isel(year = slice(-20, None)).mean('year').compute()
-                oceclim[exp].to_netcdf(cart_out + f'oce_tuning_{exp}.nc')
-
-        if coupled:
-            if os.path.exists(cart_out + f'amoc_ts_tuning_{exp}.nc') and exp not in read_again:
-                amoc_ts_exp[exp] = xr.open_dataset(cart_out + f'amoc_ts_tuning_{exp}.nc')
-                amoc_mean_exp[exp] = xr.open_dataset(cart_out + f'amoc_2d_tuning_{exp}.nc')
-            else:
-                ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True, chunks = {'time_counter': 240})
-                amoc_ts = calc_amoc_ts(ds, plot = False)
-
-                ds = ds.rename({'time_counter': 'time'})
-                amoc = ds['msftyz'].groupby('time.year').mean()
-                amoc = amoc.compute()
-                amoc_mean = amoc.isel(year = slice(-30, None)).mean('year')
-                amoc_mean = amoc_mean.squeeze()
-                
-                amoc_mean_exp[exp] = amoc_mean.compute()
-                amoc_ts_exp[exp] = amoc_ts.compute()
-
-                amoc_mean.to_netcdf(cart_out + f'amoc_2d_tuning_{exp}.nc')
-                amoc_ts.to_netcdf(cart_out + f'amoc_ts_tuning_{exp}.nc')
-
-    clim_all = dict()
-    clim_all['atm_clim'] = atmclim_exp
-    clim_all['atm_mean'] = atmmean_exp
-    if coupled:
-        clim_all['oce_clim'] = oceclim
-        clim_all['amoc_mean'] = amoc_mean_exp
-        clim_all['amoc_ts'] = amoc_ts_exp
-
-    return clim_all
->>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
 
 
 def global_mean_oce_2d(ds, exp, user, cart_exp = cart_exp, compute = True, grid = 'T'):
@@ -602,36 +484,6 @@ def plot_amoc_ts(amoc_max, exp, ylim = (5, 20), ax = None, color = None, text_xs
     return ax
 
 
-<<<<<<< HEAD
-=======
-
-def global_mean(ds, compute = True):
-    try:
-        ds = ds.assign_coords(lat=ds.lat.compute())
-        all_lats = ds.lat.groupby('lat').mean()
-        weights = np.cos(np.deg2rad(all_lats))
-    except ValueError as coso:
-        print(coso)
-        print('Dask array, trying to use unique instead')
-        all_lats = np.unique(ds.lat.values)
-        weights = np.cos(np.deg2rad(all_lats))
-
-    if 'time' in ds.coords:
-        ds_mean = ds.groupby('time.year').mean().groupby('lat').mean().weighted(weights).mean('lat')
-    elif 'year' in ds.coords:
-        ds_mean = ds.groupby('lat').mean().weighted(weights).mean('lat')
-    
-    ds_mean = ds_mean['rsut rlut rsdt tas'.split()]
-    ds_mean['toa_net'] = ds_mean.rsdt - ds_mean.rlut - ds_mean.rsut
-    
-    if compute:
-        ds_mean = ds_mean.compute()
-
-    return ds_mean
-
-
-
->>>>>>> 1b52baa (Add plot for sensitivities analysis)
 def plot_greg(atmmean_exp, exps, cart_out = cart_out, tas_clim = 287.29, net_toa_clim = 0.6, n_end = 20, imbalance = -0.9, ylim = None, colors = None):
     """
     gregory plot
@@ -919,10 +771,12 @@ def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weigh
 
     return figs
 
-def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, plot_anomalies=True,  weighted=False, colors=None, ylim=None):
+def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, 
+                               plot_anomalies=True, weighted=False, colors=None, ylim=None):
     """
-    Generates a plot for each modified parameter (± variation) comparing vs ref_exp.
-    param_map: dict with keys = parameters, values = tuple (exp_minus, exp_plus)
+    Genera un plot per ciascun parametro modificato (± variazione) confrontando vs ref_exp.
+
+    param_map: dict con chiavi = parametri, valori = tuple (exp_minus, exp_plus)
     """
 
     atmclim = create_ds_exp(atm_clim)
@@ -932,18 +786,11 @@ def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, plot_anom
     if weighted:
         weights = np.cos(np.deg2rad(atmclim.lat)).compute()
 
-    okvars = ['rlut', 'rsut', 'toa_net']
+    okvars = ['rlut', 'rsut', 'toa_net', 'rsdt']
     figs = []
 
     if colors is None:
-        colors = ['#1f77b4', '#ff7f0e']  # blu = -%, orange = +%
-
-    # y limits
-    ylim_dict = {
-        'rlut': (-12.5, 7.5),
-        'rsut': (-7, 14),
-        'toa_net': (-9, 9)
-    }
+        colors = ['#1f77b4', '#ff7f0e']  # blu = -%, arancio = +%
 
     for param, (exp_minus, exp_plus) in param_map.items():
         fig, axes = plt.subplots(len(okvars), 1, figsize=(12, 4*len(okvars)), sharex=True)
@@ -953,9 +800,13 @@ def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, plot_anom
             y_ref = atmclim.sel(exp=ref_exp)[var]
 
             if plot_anomalies:
-                ax.axhline(0., color='lightgrey', lw=1)
+                ax.axhline(0., color='lightgrey')
 
-            for exp, col, label in zip([exp_minus, exp_plus], colors, ["-50%", "+50%"]):
+            for exp, col, label in zip(
+                [exp_minus, exp_plus],
+                colors,
+                [f"-50%", f"+50%"]
+            ):
                 y = atmclim.sel(exp=exp)[var]
                 if plot_anomalies:
                     y = y - y_ref
@@ -963,30 +814,166 @@ def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, plot_anom
                     y = y * weights
 
                 ax.plot(atmclim.lat, y, label=label, color=col, lw=2)
+                ax.text(float(atmclim.lat.max()), y.values[-1], label, fontsize=11, ha='right', color=col)
 
-            ax.set_ylabel(f"{var} (W/m²)")
+            ax.set_ylabel(f"{var} (W/m2)")
             ax.set_title(f"{param} — {var}", fontsize=13)
             ax.grid(True, ls='--', alpha=0.3)
-            ax.legend(loc='upper right')
-
             if ylim is not None:
                 ax.set_ylim(ylim)
-            elif var in ylim_dict:
-                ax.set_ylim(ylim_dict[var])
 
         axes[-1].set_xlabel('Latitude')
 
         plt.suptitle(f"{param}: effect of ±50% variation vs {ref_exp}", fontsize=15)
         plt.xlim(-90, 90)
+        plt.legend(loc='upper right')
 
-        add = '_weighted' if weighted else ''
-        figname = f"zonal_fluxes_{param}_vs_{ref_exp}{add}.pdf"
+        add = ''
+        if weighted:
+            add = '_weighted'
+
+        figname = f'zonal_fluxes_{param}_vs_{ref_exp}{add}.pdf'
         fig.savefig(os.path.join(cart_out, figname), bbox_inches='tight')
         figs.append(fig)
 
     return figs
 
+def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None, xlabel = None, ylabel = None):
+    """
+    oce_clim is clim_all['oce_clim'] produced by read_output
+    exps: list of experiments
+    var: var name to plot
+    ref_exp: if specified, plot differences to ref_exp
+
+    TO BE IMPROVED: regrid and plot with cartopy
+
+    """
+    nx = int(np.ceil(np.sqrt(len(exps))))
+    ny = int(np.ceil(len(exps)/nx))
+
+    fig, axs = plt.subplots(nx, ny, figsize = (12, 12))
+    for exp, ax in zip(exps, axs.flatten()):
+        if ref_exp is not None:
+            if exp == ref_exp:
+                oce_clim[exp].tos.plot.pcolormesh(ax = ax)
+                ax.set_title(exp)
+            else:
+                (oce_clim[exp]-oce_clim[ref_exp]).tos.plot.pcolormesh(vmin = vmin, vmax = vmax, ax = ax, cmap = 'RdBu_r')
+                ax.set_title(f'{exp} - {ref_exp}')
+        else:
+            oce_clim[exp].tos.plot.pcolormesh(ax = ax, vmin = vmin, vmax = vmax)
+            ax.set_title(exp)
+        
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+    
+    plt.tight_layout()
+    
+    return fig
+
+
+def plot_amoc_2d_all(amoc_mean, exps, cart_out = cart_out):
+    nx = int(np.ceil(np.sqrt(len(exps))))
+    ny = int(np.ceil(len(exps)/nx))
+    fig, axs = plt.subplots(nx, ny, figsize = (12, 12))
+
+    for exp, ax in zip(exps, axs.flatten()):
+        plot_amoc_2d(amoc_mean[exp], exp=exp, ax = ax)
+
+    plt.tight_layout()
+    fig.savefig(cart_out + f'check_amoc_2d_{'-'.join(exps)}.pdf')
+    return fig
+
+
+def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
+    # Missing tas reference
+    atmclim = create_ds_exp(atmclim)
+    atmclim = atmclim.groupby('lat').mean()
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    y_ref = None
+    if ref_exp is not None:
+        y_ref = atmclim.sel(exp = ref_exp)['tas']
+
+    colors = get_colors(exps)
+
+    for exp, col in zip(exps, colors):
+        y = atmclim.sel(exp = exp)['tas']
+        
+        if y_ref is not None: y = y - y_ref
+
+        plt.plot(atmclim.lat, y, label = exp, color = col)
+
+        plt.text(100, y.values[-1], exp, fontsize=12, ha='right', color = col)
+        
+    ax.axhline(0., color = 'grey')
+    plt.xlim(-90, 105)
+    #plt.legend()
+    
+    ax.set_xlabel('lat')
+    if ref_exp is not None:
+        ax.set_ylabel(f'zonal temp diff wrt {ref_exp} (K)')
+    else:
+        ax.set_ylabel('zonal temp (K)')
+
+    fig.savefig(cart_out + f'check_zonal_tas_{'-'.join([exp for exp in exps if exp != ref_exp])}_vs_{ref_exp}.pdf')
+
+    return fig
+
+def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out):
+    """
+    Plots timeseries of var "vname" in domain "domain" for all exps.
+
+    Domain is one among: ['atm', 'oce', 'ice']
+    """
+
+    if domain not in ['atm', 'oce', 'ice']:
+        raise ValueError('domain should be one among: atm, oce, ice')
+    
+    ts_dataset = clim_all[f'{domain}_mean']
+
+    ts_dataset = {co: ts_dataset[co] for co in ts_dataset if ts_dataset[co] is not None}
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    if exps is None: exps = ts_dataset.keys()
+    ts_dataset = create_ds_exp(ts_dataset)
+
+    y_ref = None
+    if ref_exp is not None:
+        y_ref = norm_factor*ts_dataset.sel(exp = ref_exp)[vname]
+
+    colors = get_colors(exps)
+
+    for exp, col in zip(exps, colors):
+        y = norm_factor*ts_dataset.sel(exp = exp)[vname]
+        
+        if y_ref is not None: y = y - y_ref
+
+        if rolling is not None:
+            y.rolling(year = rolling).mean().plot(label = exp, color = col, ax = ax)
+        else:
+            y.plot(label = exp, color = col, ax = ax)
+
+        # ax.text(y.year[-1] + 5, np.nanmean(y.values[-30:]), exp, fontsize=12, ha='right', color = col) # not working for some evil reason
+    
+    ax.set_title('')
+    ax.legend()
+
+    fig.savefig(cart_out + f'check_ts_{domain}_{vname}_{'-'.join([exp for exp in exps])}.pdf')
+    
+    return fig
+
+
+def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
+    fact = 334*1000*1000/(3.1e7*4*3.14*6e6**2) # to convert sea ice formation in W/m2
+
+    # (clim_all['oce_mean'][exp]['enebal']+clim_all['ice_mean'][exp]['sivolu_N'].diff('year')*fact).rolling(year = 20).mean().plot(label = exp, color = col, ls = ':')
+    return
+
 # ============================================================
+# FUNCTIONS FOR PARAMETERS PLOTS
 def load_param_values(folder):
     """
     Reads all tuning_XX.yml files in the specified folder and returns
@@ -1188,7 +1175,7 @@ def plot_all_slopes(slope_dict, r2_dict=None, vmin=-3, vmax=3, cmap='RdBu_r',
     plt.show()
 
 
-# Funzione wrapper per slope e plot
+# Wrapper for slope and plots
 def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
                                   cart_exp='/ec/res4/scratch/{}/ece4/', var='toa_net',
                                   threshold=0.1, target_grid='r180x90', r2_thresh=0.5):
@@ -1207,7 +1194,7 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
 
     slope_dict, r2_dict, anom_full_dict, slope_50pct_dict = {}, {}, {}, {}
 
-    # --- carica valori tuning
+    # --- load tuning values
     param_folder = '/ec/res4/hpcperm/ecme3038/ecearth/ecearth4/ECtuner/exps_413lr/'
     param_yaml = load_param_values(param_folder)
 
@@ -1285,7 +1272,7 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
         r2_min  = slope.attrs.get('r2_min', np.nan)
         print(f" {param}: mean R²={r2_mean:.3f}, min R²={r2_min:.3f}")
 
-    # --- Plot 1: slope per 1%
+    # --- Plot 1: slope per 50%
     print("\nPlot 1: Sensitivity normalized (W/m² per 50%)")
     plot_all_slopes(slope_50pct_dict, r2_dict=r2_dict, vmin=-3, vmax=3, cmap='RdBu_r', r2_thresh=r2_thresh,
                     filename='plot_slope_per50pct.png', label='TOA Net (W/m² per 50% param change)')
@@ -1298,154 +1285,9 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
     return slope_dict, r2_dict, slope_50pct_dict, anom_full_dict
 
 # ============================================================
-
-def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None, xlabel = None, ylabel = None):
-    """
-    oce_clim is clim_all['oce_clim'] produced by read_output
-    exps: list of experiments
-    var: var name to plot
-    ref_exp: if specified, plot differences to ref_exp
-
-    TO BE IMPROVED: regrid and plot with cartopy
-
-    """
-    nx = int(np.ceil(np.sqrt(len(exps))))
-    ny = int(np.ceil(len(exps)/nx))
-
-    fig, axs = plt.subplots(nx, ny, figsize = (12, 12))
-    for exp, ax in zip(exps, axs.flatten()):
-        if ref_exp is not None:
-            if exp == ref_exp:
-                oce_clim[exp].tos.plot.pcolormesh(ax = ax)
-                ax.set_title(exp)
-            else:
-                (oce_clim[exp]-oce_clim[ref_exp]).tos.plot.pcolormesh(vmin = vmin, vmax = vmax, ax = ax, cmap = 'RdBu_r')
-                ax.set_title(f'{exp} - {ref_exp}')
-        else:
-            oce_clim[exp].tos.plot.pcolormesh(ax = ax, vmin = vmin, vmax = vmax)
-            ax.set_title(exp)
-        
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-    
-    plt.tight_layout()
-    
-    return fig
-
-
-def plot_amoc_2d_all(amoc_mean, exps, cart_out = cart_out):
-    nx = int(np.ceil(np.sqrt(len(exps))))
-    ny = int(np.ceil(len(exps)/nx))
-    fig, axs = plt.subplots(nx, ny, figsize = (12, 12))
-
-    for exp, ax in zip(exps, axs.flatten()):
-        plot_amoc_2d(amoc_mean[exp], exp=exp, ax = ax)
-
-    plt.tight_layout()
-    fig.savefig(cart_out + f'check_amoc_2d_{'-'.join(exps)}.pdf')
-    return fig
-
-
-def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
-    # Missing tas reference
-    atmclim = create_ds_exp(atmclim)
-    atmclim = atmclim.groupby('lat').mean()
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-
-    y_ref = None
-    if ref_exp is not None:
-        y_ref = atmclim.sel(exp = ref_exp)['tas']
-
-    colors = get_colors(exps)
-
-    for exp, col in zip(exps, colors):
-        y = atmclim.sel(exp = exp)['tas']
-        
-        if y_ref is not None: y = y - y_ref
-
-        plt.plot(atmclim.lat, y, label = exp, color = col)
-
-        plt.text(100, y.values[-1], exp, fontsize=12, ha='right', color = col)
-        
-    ax.axhline(0., color = 'grey')
-    plt.xlim(-90, 105)
-    #plt.legend()
-    
-    ax.set_xlabel('lat')
-    if ref_exp is not None:
-        ax.set_ylabel(f'zonal temp diff wrt {ref_exp} (K)')
-    else:
-        ax.set_ylabel('zonal temp (K)')
-
-    fig.savefig(cart_out + f'check_zonal_tas_{'-'.join([exp for exp in exps if exp != ref_exp])}_vs_{ref_exp}.pdf')
-
-    return fig
-
-
-<<<<<<< HEAD
-<<<<<<< HEAD
-def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out):
-    """
-    Plots timeseries of var "vname" in domain "domain" for all exps.
-
-    Domain is one among: ['atm', 'oce', 'ice']
-    """
-
-    if domain not in ['atm', 'oce', 'ice']:
-        raise ValueError('domain should be one among: atm, oce, ice')
-    
-    ts_dataset = clim_all[f'{domain}_mean']
-
-    ts_dataset = {co: ts_dataset[co] for co in ts_dataset if ts_dataset[co] is not None}
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-
-    if exps is None: exps = ts_dataset.keys()
-    ts_dataset = create_ds_exp(ts_dataset)
-
-    y_ref = None
-    if ref_exp is not None:
-        y_ref = norm_factor*ts_dataset.sel(exp = ref_exp)[vname]
-
-    colors = get_colors(exps)
-
-    for exp, col in zip(exps, colors):
-        y = norm_factor*ts_dataset.sel(exp = exp)[vname]
-        
-        if y_ref is not None: y = y - y_ref
-
-        if rolling is not None:
-            y.rolling(year = rolling).mean().plot(label = exp, color = col, ax = ax)
-        else:
-            y.plot(label = exp, color = col, ax = ax)
-
-        # ax.text(y.year[-1] + 5, np.nanmean(y.values[-30:]), exp, fontsize=12, ha='right', color = col) # not working for some evil reason
-    
-    ax.set_title('')
-    ax.legend()
-
-    fig.savefig(cart_out + f'check_ts_{domain}_{vname}_{'-'.join([exp for exp in exps])}.pdf')
-    
-    return fig
-
-
-def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
-    fact = 334*1000*1000/(3.1e7*4*3.14*6e6**2) # to convert sea ice formation in W/m2
-
-    # (clim_all['oce_mean'][exp]['enebal']+clim_all['ice_mean'][exp]['sivolu_N'].diff('year')*fact).rolling(year = 20).mean().plot(label = exp, color = col, ls = ':')
-    return
-
 ################################################ MAIN FUNCTION ###########################
 
-
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None):
-=======
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, param_map = {}):
->>>>>>> 1b52baa (Add plot for sensitivities analysis)
-=======
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, param_map = {}, skip_first_year=False, plot_diffref = False, plot_param = False):
->>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}):
     """
     Runs all multi-exps diagnostics.
 
@@ -1468,31 +1310,24 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     ### read outputs for all exps
     clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim)
 
-<<<<<<< HEAD
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
 
     ### Gregory and amoc gregory
     fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs)
-<<<<<<< HEAD
+    allfigs = [fig_greg]
+
     if coupled:
-=======
-    
-    if 'amoc_ts' in clim_all:
->>>>>>> 1b52baa (Add plot for sensitivities analysis)
         fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs)
+        allfigs.append(fig_amoc_greg)
 
     # Atm fluxes and zonal tas
     figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs)
+    allfigs += figs_rad
 
-<<<<<<< HEAD
     if coupled:
-=======
-    figs_diffref = plot_zonal_fluxes_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
-    
-    if 'amoc_ts' in clim_all:
->>>>>>> 1b52baa (Add plot for sensitivities analysis)
         fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs)
+        allfigs.append(fig_tas)
 
     ###### CAN ADD NEW DIAGS HERE
     if coupled:
@@ -1505,28 +1340,13 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
         fig_sic = plot_var_ts(clim_all, 'ice', 'siconc_N', cart_out = cart_out_figs, rolling=rolling)
         fig_siv2 = plot_var_ts(clim_all, 'ice', 'sivolu_S', cart_out = cart_out_figs, rolling=rolling)
         fig_sic2 = plot_var_ts(clim_all, 'ice', 'siconc_S', cart_out = cart_out_figs, rolling=rolling)
-=======
-    if skip_first_year:
-        for k, ds in clim_all.items():
-            if isinstance(ds, xr.Dataset) and 'time' in ds:
-                time_coord = ds['time']
-                # esclude primi 12 mesi se mensili
-                if len(time_coord) > 12:
-                    clim_all[k] = ds.sel(time=slice(time_coord[12], None))
+        allfigs += [fig_tos, fig_heatc, fig_qtoce, fig_enebal, fig_siv, fig_sic, fig_siv2, fig_sic2]
 
-    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs)
-    allfigs = [fig_greg]
-    
-    if 'amoc_ts' in clim_all:
-        fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw=0.25, cart_out=cart_out_figs)
-        allfigs.append(fig_amoc_greg)
-
-    figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps=exps, cart_out=cart_out_figs)
-    allfigs += figs_rad
-
-    # Optional diagnostics
+  # --- Optional diagnostics for tuning experiments
     if plot_diffref:
-        figs_diffref = plot_zonal_fluxes_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
+        figs_diffref = plot_zonal_fluxes_vs_ref(
+            clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs
+        )
         allfigs += figs_diffref
 
     if plot_param:
@@ -1539,26 +1359,6 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             weighted=False
         )
         allfigs += figs_param
->>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
-
-<<<<<<< HEAD
-    if coupled:
-        allfigs = [fig_greg, fig_amoc_greg] + figs_rad + [fig_tas] + [fig_tos, fig_heatc, fig_qtoce, fig_enebal, fig_siv, fig_sic, fig_siv2, fig_sic2]
-=======
-    if 'amoc_ts' in clim_all:
-<<<<<<< HEAD
-        allfigs = [fig_greg, fig_amoc_greg] + figs_rad + figs_diffref + [fig_tas]
->>>>>>> 1b52baa (Add plot for sensitivities analysis)
-    else:
-        allfigs = [fig_greg] + figs_rad + figs_diffref
-
-    figs_param = plot_zonal_fluxes_by_param(atm_clim=clim_all['atm_clim'], ref_exp=ref_exp, param_map=param_map, cart_out=cart_out_figs, plot_anomalies=True,weighted=False)
-
-    allfigs += figs_param
-=======
-        fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
-        allfigs.append(fig_tas)
->>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
 
     print(f'Done! Check results in {cart_out_figs}')
 
@@ -1592,7 +1392,7 @@ def main(config_path = None):
     cart_out = config.get('cart_out')
     imbalance = config.get('imbalance')
     ref_exp = config.get('ref_exp')
-    skip_first_year = config.get('skip_first_year', False)
+    
 
     if user is None:
         user = os.getenv('USER')
@@ -1604,7 +1404,7 @@ def main(config_path = None):
     print(f"Cart exp: {cart_exp}")
     print(f"Cart out: {cart_out}")
 
-    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, skip_first_year=skip_first_year)
+    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp)
 
     return clim_all, figs
     

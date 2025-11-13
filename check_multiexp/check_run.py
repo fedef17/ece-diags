@@ -1,13 +1,23 @@
+# import os, dask
+# os.environ["OMP_NUM_THREADS"] = "1"
+# os.environ["OPENBLAS_NUM_THREADS"] = "1"
+# os.environ["MKL_NUM_THREADS"] = "1"
+# os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# dask.config.set(scheduler='single-threaded')
+
 import xarray as xr
 from matplotlib import pyplot as plt
 import numpy as np
-import os
 import pandas as pd
+import os 
 
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
+import xesmf as xe
+import cartopy.crs as ccrs
+import matplotlib.pyplot as plt
 
 import glob
 
@@ -145,7 +155,115 @@ def global_mean(ds, compute = True):
     if compute:
         ds_mean = ds_mean.compute()
 
+<<<<<<< HEAD
     return ds_mean
+=======
+    filz_exp = dict()
+    filz_amoc = dict()
+    filz_nemo = dict()
+
+    for exp, us in zip(exps, user):
+        cart = f'{cart_exp.format(us)}/{exp}/output/oifs/'
+        filz = cart + f'{exp}_atm_cmip6_1m_*.nc'
+        filz_exp[exp] = filz
+
+    for exp, us in zip(exps, user):
+        cart = f'{cart_exp.format(us)}/{exp}/output/nemo/'
+        filz = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
+        filz_amoc[exp] = filz
+
+        filz = cart + f'{exp}_oce_1m_T_*.nc'
+        filz_nemo[exp] = filz
+
+    atmmean_exp = dict()
+    atmclim_exp = dict()
+    oceclim = dict()
+    amoc_mean_exp = dict()
+    amoc_ts_exp = dict()
+
+    for exp in exps:
+        print(exp)
+        coupled = False
+        if len(glob.glob(filz_nemo[exp])) > 0:
+            print('coupled')
+            coupled = True
+        else:
+            print(f'NO files matching pattern: {filz_nemo[exp]}. Assuming atm-only')
+
+        if os.path.exists(cart_out + f'clim_tuning_{exp}.nc') and exp not in read_again:
+            atmclim_exp[exp] = xr.open_dataset(cart_out + f'clim_tuning_{exp}.nc')
+            atmmean_exp[exp] = xr.open_dataset(cart_out + f'mean_tuning_{exp}.nc')
+            
+            if coupled:
+                oceclim[exp] = xr.open_dataset(cart_out + f'oce_tuning_{exp}.nc')
+        else:
+            try:
+                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
+            except OSError as err:
+                print(err)
+                print('Run still ongoing, removing last year')
+                # Still running, remove last year
+                fils = glob.glob(filz_exp[exp])
+                fils.sort()
+                filz_exp[exp] = fils[:-1]
+
+                if coupled:
+                    fils = glob.glob(filz_nemo[exp])
+                    fils.sort()
+                    filz_nemo[exp] = fils[:-1]
+
+                    fils = glob.glob(filz_amoc[exp])
+                    fils.sort()
+                    filz_amoc[exp] = fils[:-1]
+
+                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
+            
+            ds = ds.rename({'time_counter': 'time'})
+            ds = ds[atmvars].groupby('time.year').mean()     
+
+            atmclim_exp[exp] = ds.isel(year = slice(-20, None)).mean('year').compute()
+            atmmean_exp[exp] = global_mean(ds, compute = True)
+            atmclim_exp[exp].to_netcdf(cart_out + f'clim_tuning_{exp}.nc')
+            atmmean_exp[exp].to_netcdf(cart_out + f'mean_tuning_{exp}.nc')
+
+            if coupled:
+                ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = ds.rename({'time_counter': 'time'})
+                ds = ds[ocevars].groupby('time.year').mean()
+
+                oceclim[exp] = ds.isel(year = slice(-20, None)).mean('year').compute()
+                oceclim[exp].to_netcdf(cart_out + f'oce_tuning_{exp}.nc')
+
+        if coupled:
+            if os.path.exists(cart_out + f'amoc_ts_tuning_{exp}.nc') and exp not in read_again:
+                amoc_ts_exp[exp] = xr.open_dataset(cart_out + f'amoc_ts_tuning_{exp}.nc')
+                amoc_mean_exp[exp] = xr.open_dataset(cart_out + f'amoc_2d_tuning_{exp}.nc')
+            else:
+                ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True, chunks = {'time_counter': 240})
+                amoc_ts = calc_amoc_ts(ds, plot = False)
+
+                ds = ds.rename({'time_counter': 'time'})
+                amoc = ds['msftyz'].groupby('time.year').mean()
+                amoc = amoc.compute()
+                amoc_mean = amoc.isel(year = slice(-30, None)).mean('year')
+                amoc_mean = amoc_mean.squeeze()
+                
+                amoc_mean_exp[exp] = amoc_mean.compute()
+                amoc_ts_exp[exp] = amoc_ts.compute()
+
+                amoc_mean.to_netcdf(cart_out + f'amoc_2d_tuning_{exp}.nc')
+                amoc_ts.to_netcdf(cart_out + f'amoc_ts_tuning_{exp}.nc')
+
+    clim_all = dict()
+    clim_all['atm_clim'] = atmclim_exp
+    clim_all['atm_mean'] = atmmean_exp
+    if coupled:
+        clim_all['oce_clim'] = oceclim
+        clim_all['amoc_mean'] = amoc_mean_exp
+        clim_all['amoc_ts'] = amoc_ts_exp
+
+    return clim_all
+>>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
 
 
 def global_mean_oce_2d(ds, exp, user, cart_exp = cart_exp, compute = True, grid = 'T'):
@@ -801,12 +919,10 @@ def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weigh
 
     return figs
 
-def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, 
-                               plot_anomalies=True, weighted=False, colors=None, ylim=None):
+def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, plot_anomalies=True,  weighted=False, colors=None, ylim=None):
     """
-    Genera un plot per ciascun parametro modificato (± variazione) confrontando vs ref_exp.
-
-    param_map: dict con chiavi = parametri, valori = tuple (exp_minus, exp_plus)
+    Generates a plot for each modified parameter (± variation) comparing vs ref_exp.
+    param_map: dict with keys = parameters, values = tuple (exp_minus, exp_plus)
     """
 
     atmclim = create_ds_exp(atm_clim)
@@ -816,11 +932,18 @@ def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out,
     if weighted:
         weights = np.cos(np.deg2rad(atmclim.lat)).compute()
 
-    okvars = ['rlut', 'rsut', 'toa_net', 'rsdt']
+    okvars = ['rlut', 'rsut', 'toa_net']
     figs = []
 
     if colors is None:
-        colors = ['#1f77b4', '#ff7f0e']  # blu = -%, arancio = +%
+        colors = ['#1f77b4', '#ff7f0e']  # blu = -%, orange = +%
+
+    # y limits
+    ylim_dict = {
+        'rlut': (-12.5, 7.5),
+        'rsut': (-7, 14),
+        'toa_net': (-9, 9)
+    }
 
     for param, (exp_minus, exp_plus) in param_map.items():
         fig, axes = plt.subplots(len(okvars), 1, figsize=(12, 4*len(okvars)), sharex=True)
@@ -830,13 +953,9 @@ def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out,
             y_ref = atmclim.sel(exp=ref_exp)[var]
 
             if plot_anomalies:
-                ax.axhline(0., color='lightgrey')
+                ax.axhline(0., color='lightgrey', lw=1)
 
-            for exp, col, label in zip(
-                [exp_minus, exp_plus],
-                colors,
-                [f"-50%", f"+50%"]
-            ):
+            for exp, col, label in zip([exp_minus, exp_plus], colors, ["-50%", "+50%"]):
                 y = atmclim.sel(exp=exp)[var]
                 if plot_anomalies:
                     y = y - y_ref
@@ -844,29 +963,341 @@ def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out,
                     y = y * weights
 
                 ax.plot(atmclim.lat, y, label=label, color=col, lw=2)
-                ax.text(float(atmclim.lat.max()), y.values[-1], label, fontsize=11, ha='right', color=col)
 
-            ax.set_ylabel(f"{var} (W/m2)")
+            ax.set_ylabel(f"{var} (W/m²)")
             ax.set_title(f"{param} — {var}", fontsize=13)
             ax.grid(True, ls='--', alpha=0.3)
+            ax.legend(loc='upper right')
+
             if ylim is not None:
                 ax.set_ylim(ylim)
+            elif var in ylim_dict:
+                ax.set_ylim(ylim_dict[var])
 
         axes[-1].set_xlabel('Latitude')
 
         plt.suptitle(f"{param}: effect of ±50% variation vs {ref_exp}", fontsize=15)
         plt.xlim(-90, 90)
-        plt.legend(loc='upper right')
 
-        add = ''
-        if weighted:
-            add = '_weighted'
-
-        figname = f'zonal_fluxes_{param}_vs_{ref_exp}{add}.pdf'
+        add = '_weighted' if weighted else ''
+        figname = f"zonal_fluxes_{param}_vs_{ref_exp}{add}.pdf"
         fig.savefig(os.path.join(cart_out, figname), bbox_inches='tight')
         figs.append(fig)
 
     return figs
+
+# ============================================================
+def load_param_values(folder):
+    """
+    Reads all tuning_XX.yml files in the specified folder and returns
+    a dictionary with parameter values for each experiment.
+    Also handles YAML files starting with '- base.context:'.
+    """
+    param_dict = {}
+    for f in glob.glob(os.path.join(folder, "tuning_*.yml")):
+        exp_name = os.path.basename(f).replace("tuning_", "").replace(".yml", "")
+        with open(f) as fin:
+            data = yaml.safe_load(fin)
+
+        # If it's a list extract the first element
+        if isinstance(data, list) and len(data) > 0:
+            data = data[0]
+
+        try:
+            tuning = data['base.context']['model_config']['oifs']['tuning']
+        except Exception as e:
+            print(f"⚠️ Skipping {f}: unexpected YAML structure ({type(data)}). Error: {e}")
+            continue
+
+        params = {}
+        for block in tuning.values():
+            for k, v in block.items():
+                if v is not None:
+                    try:
+                        params[k] = float(v)
+                    except ValueError:
+                        print(f"⚠️ Non-numeric value for {k} in {f}: {v}")
+        param_dict[exp_name] = params
+
+    print(f"Loaded {len(param_dict)} tuning files from {folder}")
+    return param_dict
+
+def compute_slope_and_linearity(ds_minus, ds_ref, ds_plus, param_name, param_values, var='toa_net'):
+    """
+    Calculate the slope (normalized change with respect to the parameter change)
+    and the coefficient of determination R² for each spatial point.
+    """
+
+    # Temporal mean → get 2D maps
+    if 'year' in ds_minus.dims:
+        y_minus = ds_minus[var].mean('year')
+        y_ref   = ds_ref[var].mean('year')
+        y_plus  = ds_plus[var].mean('year')
+    elif 'time_counter' in ds_minus.dims:
+        y_minus = ds_minus[var].mean('time_counter')
+        y_ref   = ds_ref[var].mean('time_counter')
+        y_plus  = ds_plus[var].mean('time_counter')
+    else:
+        raise ValueError("No time dimension found ('year' or 'time_counter')")
+
+    # Parameter values (x)
+    x_vals = np.array([
+        param_values['minus'][param_name],
+        param_values['ref'][param_name],
+        param_values['plus'][param_name]
+    ])
+
+    # Stack the 3 simulations into a single DataArray
+    y_stack = xr.concat([y_minus, y_ref, y_plus], dim='param_change')
+    y_stack = y_stack.assign_coords(param_change=x_vals)
+
+    y_stack = y_stack.chunk({'param_change': -1})
+
+    # Linear regression function for each cell
+    def linfit(x, y):
+        p = np.polyfit(x, y, 1)
+        slope = p[0]
+        corr = np.corrcoef(x, y)[0, 1]
+        return slope, corr**2  # returns slope and R²
+
+    # Apply vectorized over all cells
+    slope, r2 = xr.apply_ufunc(
+        linfit,
+        y_stack.param_change,
+        y_stack,
+        input_core_dims=[["param_change"], ["param_change"]],
+        output_core_dims=[[], []],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[float, float]
+    )
+
+    slope.attrs["r2_mean"] = float(r2.mean().values)
+    slope.attrs["r2_min"] = float(r2.min().values)
+
+    return slope, r2
+
+def mask_insignificant(slope, ds_minus, ds_ref, ds_plus, var='toa_net', threshold=0.1):
+    """
+    Maschera i punti dove la risposta è inferiore a una frazione del range massimo.
+    """
+    y_minus = ds_minus[var]
+    y_plus = ds_plus[var]
+    response_range = np.abs(y_plus - y_minus)
+    max_change = response_range.max()
+    mask = response_range < (threshold * max_change)
+    slope_masked = slope.where(~mask)
+    slope_masked.attrs['mask_info'] = f"Masked where Δresponse < {threshold*100:.1f}% of max"
+    return slope_masked
+
+def regrid_to_regular_smm_safe(ds, target_grid="r180x90", method="ycon", grid_in=None):
+    import shutil
+    from smmregrid import cdo_generate_weights, Regridder
+
+    os.environ["PATH"] += ":/usr/local/apps/cdo/2.5.1/bin"
+    os.environ["CDO_PTHREADS"] = "1"
+
+    if shutil.which("cdo") is None:
+        print("CDO not found in PATH. Skip regridding.")
+        return ds
+
+    if 'cell' not in ds.dims:
+        print("Dataset already on regular grid. Skip regrid.")
+        return ds
+
+    # If not provided, take the first timestep of the dataset
+    if grid_in is None:
+        grid_in = ds.isel(time_counter=0)
+
+    try:
+        weights = cdo_generate_weights(grid_in, target_grid=target_grid, method=method)
+        regridder = Regridder(weights=weights)
+        ds_reg = regridder.regrid(ds)
+        print(f"Regridding completed on {target_grid}")
+        return ds_reg
+    except Exception as e:
+        print(f"Regridding failed: {e}")
+        return ds
+    
+
+def plot_all_slopes(slope_dict, r2_dict=None, vmin=-3, vmax=3, cmap='RdBu_r',
+                    r2_thresh=0.5, filename=None, label='Net TOA (W/m²)'):
+    """
+    Creates a single figure with all slope maps.
+    If r2_dict is provided, highlights statistically significant areas (R² > r2_thresh).
+    """
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import numpy as np
+
+    n = len(slope_dict)
+    ncols = 3
+    nrows = int(np.ceil(n / ncols))
+
+    fig, axs = plt.subplots(
+        nrows, ncols,
+        figsize=(4*ncols, 2.5*nrows),
+        subplot_kw={'projection': ccrs.PlateCarree()}
+    )
+    axs = axs.flatten()
+
+    for i, (param, field) in enumerate(slope_dict.items()):
+        ax = axs[i]
+
+        # Reduce slope to 2D if necessary
+        extra_dims = [d for d in field.dims if d not in ['lat', 'lon']]
+        if extra_dims:
+            print(f"Slope {param} has extra dimensions {extra_dims}, averaging.")
+            field = field.mean(extra_dims)
+
+        data = field.values
+        lon2d, lat2d = np.meshgrid(field['lon'], field['lat'])
+
+        # Alpha based on R²
+        alpha_mask = 1.0
+        if r2_dict is not None and param in r2_dict:
+            r2_field = r2_dict[param]
+            extra_dims_r2 = [d for d in r2_field.dims if d not in ['lat', 'lon']]
+            if extra_dims_r2:
+                r2_field = r2_field.mean(extra_dims_r2)
+            r2_data = r2_field.interp_like(field, method="nearest").values
+            alpha_mask = np.where(r2_data >= r2_thresh, 1.0, 0.3)
+
+        # Plot
+        im = ax.pcolormesh(
+            lon2d, lat2d, data,
+            vmin=vmin, vmax=vmax, cmap=cmap,
+            alpha=alpha_mask,
+            transform=ccrs.PlateCarree(),
+            shading="auto"
+        )
+
+        ax.coastlines(linewidth=0.5)
+        ax.set_title(param, fontsize=12)
+
+    for ax in axs[len(slope_dict):]:
+        ax.remove()
+
+    # Common colorbar
+    cbar_ax = fig.add_axes([0.25, 0.08, 0.5, 0.03])
+    cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+    cbar.set_label(label)
+
+    if filename:
+        plt.savefig(filename, bbox_inches='tight')
+    plt.show()
+
+
+# Funzione wrapper per slope e plot
+def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
+                                  cart_exp='/ec/res4/scratch/{}/ece4/', var='toa_net',
+                                  threshold=0.1, target_grid='r180x90', r2_thresh=0.5):
+    """
+    Calculates slope and R² for each parameter, then shows two sets of maps:
+      (1) slope normalized per 1%
+      (2) total anomaly minus→plus
+    Masks non-significant areas based on R².
+    """
+    import os, dask
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+    dask.config.set(scheduler='single-threaded')
+
+    slope_dict, r2_dict, anom_full_dict, slope_50pct_dict = {}, {}, {}, {}
+
+    # --- carica valori tuning
+    param_folder = '/ec/res4/hpcperm/ecme3038/ecearth/ecearth4/ECtuner/exps_413lr/'
+    param_yaml = load_param_values(param_folder)
+
+    def normalize_exp_key(exp, available_keys):
+        exp_num = exp.replace('n', '').lstrip('0') or '0'
+        key = exp_num.zfill(2)
+        if key not in available_keys:
+            raise KeyError(f"No matching experiment '{exp}' in YAML ({list(available_keys)})")
+        return key
+
+    for param, exps in param_map.items():
+        
+        if len(exps) != 2:
+            print(f"Parameter {param} does not have two experiments. Skip.")
+            continue
+
+        exp_minus, exp_plus = exps
+        exp_list = [exp_minus, ref_exp, exp_plus]
+        ds_dict = {}
+
+        # --- load dataset
+        for exp in exp_list:
+            filz = glob.glob(f'{cart_exp.format(user)}/{exp}/output/oifs/{exp}_atm_cmip6_1m_*.nc')
+            if not filz:
+                raise FileNotFoundError(f"NetCDF files not found for {exp}")
+            ds = xr.open_mfdataset(filz, use_cftime=True, chunks={})
+            ds = ds[['rsut', 'rlut', 'rsdt', 'tas']]
+            if 'cell' in ds.dims:
+                print(f"Regridding {exp} with CDO on {target_grid}...")
+                grid_file = filz[0]
+                grid_in = xr.open_dataset(grid_file).isel(time_counter=0)
+                ds = regrid_to_regular_smm_safe(ds, target_grid=target_grid, method="ycon", grid_in=grid_in)
+                print(f"Regrid completed: dims = {list(ds.dims.keys())}")
+            ds['toa_net'] = ds['rsdt'] - ds['rlut'] - ds['rsut']
+            ds = ds.rename({'time_counter': 'time'}).chunk({'time': 240})
+            ds = ds.groupby('time.year').mean()
+            ds_dict[exp] = ds
+
+        # --- retrieve parameter values
+        try:
+            key_minus = normalize_exp_key(exp_minus, param_yaml.keys())
+            key_ref   = normalize_exp_key(ref_exp,   param_yaml.keys())
+            key_plus  = normalize_exp_key(exp_plus,  param_yaml.keys())
+        except KeyError as e:
+            print(f"Skip {param}: {e}")
+            continue
+
+        p_minus = float(param_yaml[key_minus][param])
+        p_ref   = float(param_yaml[key_ref][param])
+        p_plus  = float(param_yaml[key_plus][param])
+        param_values = {'minus': {param: p_minus}, 'ref': {param: p_ref}, 'plus': {param: p_plus}}
+
+        # --- calculate slope and linearity
+        slope, r2 = compute_slope_and_linearity(ds_dict[exp_minus], ds_dict[ref_exp], ds_dict[exp_plus],
+                                                param, param_values, var=var)
+
+        # --- total anomaly (minus→plus)
+        delta_full = p_plus - p_minus
+        anom_full = slope * delta_full
+        anom_full.name = f"{param}_anom_full"
+        anom_full.attrs['units'] = 'W/m²'
+        anom_full.attrs['descr'] = f"TOA change for Δparam={delta_full:.3g}"
+
+        # --- slope normalized per 1%
+        slope_per50pct = slope * (abs(p_ref) * 0.5 if p_ref not in [0, None, np.nan] else np.nan)
+        slope_per50pct.name = f"{param}_slope_per50pct"
+        slope_per50pct.attrs['units'] = 'W/m² per 50%'
+
+        slope_dict[param] = slope
+        r2_dict[param] = r2
+        anom_full_dict[param] = anom_full
+        slope_50pct_dict[param] = slope_per50pct
+
+        r2_mean = slope.attrs.get('r2_mean', np.nan)
+        r2_min  = slope.attrs.get('r2_min', np.nan)
+        print(f" {param}: mean R²={r2_mean:.3f}, min R²={r2_min:.3f}")
+
+    # --- Plot 1: slope per 1%
+    print("\nPlot 1: Sensitivity normalized (W/m² per 50%)")
+    plot_all_slopes(slope_50pct_dict, r2_dict=r2_dict, vmin=-3, vmax=3, cmap='RdBu_r', r2_thresh=r2_thresh,
+                    filename='plot_slope_per50pct.png', label='TOA Net (W/m² per 50% param change)')
+
+    # --- Plot 2: physical effect (total anomaly)
+    print("\nPlot 2: Total effect minus→plus (W/m²)")
+    plot_all_slopes(anom_full_dict, r2_dict=r2_dict, vmin=-10, vmax=10, cmap='RdBu_r', r2_thresh=r2_thresh,
+                    filename='plot_anom_full.png', label='TOA Net anomaly (W/m²)')
+
+    return slope_dict, r2_dict, slope_50pct_dict, anom_full_dict
+
+# ============================================================
 
 def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None, xlabel = None, ylabel = None):
     """
@@ -953,6 +1384,7 @@ def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out):
     """
     Plots timeseries of var "vname" in domain "domain" for all exps.
@@ -1011,6 +1443,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 =======
 def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, param_map = {}):
 >>>>>>> 1b52baa (Add plot for sensitivities analysis)
+=======
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, param_map = {}, skip_first_year=False, plot_diffref = False, plot_param = False):
+>>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
     """
     Runs all multi-exps diagnostics.
 
@@ -1033,6 +1468,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     ### read outputs for all exps
     clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim)
 
+<<<<<<< HEAD
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
 
@@ -1069,12 +1505,48 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
         fig_sic = plot_var_ts(clim_all, 'ice', 'siconc_N', cart_out = cart_out_figs, rolling=rolling)
         fig_siv2 = plot_var_ts(clim_all, 'ice', 'sivolu_S', cart_out = cart_out_figs, rolling=rolling)
         fig_sic2 = plot_var_ts(clim_all, 'ice', 'siconc_S', cart_out = cart_out_figs, rolling=rolling)
+=======
+    if skip_first_year:
+        for k, ds in clim_all.items():
+            if isinstance(ds, xr.Dataset) and 'time' in ds:
+                time_coord = ds['time']
+                # esclude primi 12 mesi se mensili
+                if len(time_coord) > 12:
+                    clim_all[k] = ds.sel(time=slice(time_coord[12], None))
+
+    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs)
+    allfigs = [fig_greg]
+    
+    if 'amoc_ts' in clim_all:
+        fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw=0.25, cart_out=cart_out_figs)
+        allfigs.append(fig_amoc_greg)
+
+    figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps=exps, cart_out=cart_out_figs)
+    allfigs += figs_rad
+
+    # Optional diagnostics
+    if plot_diffref:
+        figs_diffref = plot_zonal_fluxes_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
+        allfigs += figs_diffref
+
+    if plot_param:
+        figs_param = plot_zonal_fluxes_by_param(
+            atm_clim=clim_all['atm_clim'],
+            ref_exp=ref_exp,
+            param_map=param_map,
+            cart_out=cart_out_figs,
+            plot_anomalies=True,
+            weighted=False
+        )
+        allfigs += figs_param
+>>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
 
 <<<<<<< HEAD
     if coupled:
         allfigs = [fig_greg, fig_amoc_greg] + figs_rad + [fig_tas] + [fig_tos, fig_heatc, fig_qtoce, fig_enebal, fig_siv, fig_sic, fig_siv2, fig_sic2]
 =======
     if 'amoc_ts' in clim_all:
+<<<<<<< HEAD
         allfigs = [fig_greg, fig_amoc_greg] + figs_rad + figs_diffref + [fig_tas]
 >>>>>>> 1b52baa (Add plot for sensitivities analysis)
     else:
@@ -1083,6 +1555,10 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     figs_param = plot_zonal_fluxes_by_param(atm_clim=clim_all['atm_clim'], ref_exp=ref_exp, param_map=param_map, cart_out=cart_out_figs, plot_anomalies=True,weighted=False)
 
     allfigs += figs_param
+=======
+        fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
+        allfigs.append(fig_tas)
+>>>>>>> b1fd62f (Added new functions to plot tuning parameters diagnostic)
 
     print(f'Done! Check results in {cart_out_figs}')
 
@@ -1116,6 +1592,7 @@ def main(config_path = None):
     cart_out = config.get('cart_out')
     imbalance = config.get('imbalance')
     ref_exp = config.get('ref_exp')
+    skip_first_year = config.get('skip_first_year', False)
 
     if user is None:
         user = os.getenv('USER')
@@ -1127,7 +1604,7 @@ def main(config_path = None):
     print(f"Cart exp: {cart_exp}")
     print(f"Cart out: {cart_out}")
 
-    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp)
+    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, skip_first_year=skip_first_year)
 
     return clim_all, figs
     

@@ -207,13 +207,13 @@ def global_mean_ice(ds, exp, user, cart_exp = cart_exp, compute = True, grid = '
 
 def compute_atm_clim(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None):
     ds = ds.rename({'time_counter': 'time'})
-    ds = ds[atmvars].groupby('time.year').mean()
+    ds = ds[atmvars].groupby('time.year').mean().compute()
 
     if year_clim is None:
         print('Using last 20 years for climatology')
-        atmclim = ds.isel(year = slice(-20, None)).mean('year').compute()
+        atmclim = ds.isel(year = slice(-20, None)).mean('year')
     else:
-        atmclim = ds.sel(year = slice(year_clim[0], year_clim[1])).mean('year').compute()
+        atmclim = ds.sel(year = slice(year_clim[0], year_clim[1])).mean('year')
     atmmean = global_mean(ds, compute = True)
     atmclim.to_netcdf(cart_out + f'clim_tuning_{exp}.nc')
     atmmean.to_netcdf(cart_out + f'mean_tuning_{exp}.nc')
@@ -1324,6 +1324,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     # Atm fluxes and zonal tas
     figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs)
     allfigs += figs_rad
+
+    fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs)
+    allfigs.append(fig_tas)
 
     if coupled:
         fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs)

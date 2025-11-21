@@ -861,7 +861,7 @@ def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None
     TO BE IMPROVED: regrid and plot with cartopy
 
     """
-    if ref_exp not in exps:
+    if ref_exp is not None and ref_exp not in exps:
         print(f'WARNING: {ref_exp} not in exps! plotting absolute values')
         ref_exp = None
 
@@ -907,7 +907,7 @@ def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
     atmclim = create_ds_exp(atmclim)
     atmclim = atmclim.groupby('lat').mean()
 
-    if ref_exp not in exps:
+    if ref_exp is not None and ref_exp not in exps:
         print(f'WARNING: {ref_exp} not in exps! plotting absolute values')
         ref_exp = None
 
@@ -963,7 +963,7 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
     if exps is None: exps = ts_dataset.keys()
     ts_dataset = create_ds_exp(ts_dataset)
 
-    if ref_exp not in exps:
+    if ref_exp is not None and ref_exp not in exps:
         print(f'WARNING: {ref_exp} not in exps! plotting absolute values')
         ref_exp = None
 

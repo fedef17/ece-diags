@@ -19,3 +19,11 @@ imbalance: -0.75 # this is for TL63-ORCA2. change to 0 for TL255-eORCA1 (need to
 
 # experiment to compare with (for plots)
 ref_exp: 'TN10'
+
+# skip first year of data in the analysis (to avoid spinup effects)
+skip_first_year: false
+
+# Optional diagnostics
+plot_param: false
+plot_diffref: false
+param_map: {}

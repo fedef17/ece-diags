@@ -642,7 +642,7 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
         ax.plot(atmmean_exp[exp].tas, atmmean_exp[exp].toa_net, label = exp, lw = 0.2, color = col)
         #ax.scatter(atmmean_exp[exp].tas.sel(year = slice(1990, 2000)).mean(), atmmean_exp[exp].toa_net.sel(year = slice(1990, 2000)).mean(), s = 1000, color = 'red', marker = 'o')
         x, y = atmmean_exp[exp].tas.isel(year = slice(-n_end, None)).mean(), atmmean_exp[exp].toa_net.isel(year = slice(-n_end, None)).mean()
-        ax.scatter(x, y, s = 1000, color = col, marker = 'o', alpha = 0.5)
+        ax.scatter(x, y, s = 1000, color = col, marker = 'o', alpha = 0.5, zorder = 3)
         ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
 
     ### plot target shades
@@ -709,7 +709,7 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
         ax.plot(x, y, label = exp, lw = lw, color = col)
         
         x, y = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
-        ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5)
+        ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5, zorder = 3)
         ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
 
     ax.set_xlabel('GTAS (K)')
@@ -790,7 +790,7 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
         ax.plot(x, y, label = exp, lw = lw, color = col)
         
         x, y = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
-        ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5)
+        ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5, zorder = 3)
         ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
 
     ax.set_xlabel(xlabel)

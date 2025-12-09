@@ -157,7 +157,7 @@ def global_mean_oce_2d(ds, exp, user, cart_exp = cart_exp, compute = True, grid 
     mask = get_mask_nemo(exp, user, cart_exp = cart_exp, grid = grid)
 
     tot_area = np.nansum(area*mask)
-    ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'})
+    #ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'})
     ds_time_mean = (ds*area*mask).sum(['x', 'y'])
     
     for var in ds_time_mean.data_vars:
@@ -184,7 +184,7 @@ def get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = 'deptht'):
         thetao = fileoce.thetao[0]
         vmask = thetao/thetao
     else:
-        fileoce = xr.load_dataset('../density/density_fields/' + f'{exp}_density.nc')
+        fileoce = xr.load_dataset('../density/density_fields/' + f'{exp}/{exp}_1850_density.nc')
         #fileoce = fileoce.rename({f'x_grid_T': 'x', f'y_grid_T': 'y'})
         density = fileoce.Nsquared[0]
         vmask = density/density
@@ -196,7 +196,7 @@ def global_mean_oce_3d(ds, exp, user, vars, cart_exp = cart_exp, compute = True,
     
     area = get_areas_nemo(exp, user, cart_exp = cart_exp, grid = grid)
     
-    ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'}) # for 4.1.0
+    #ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'}) # for 4.1.0
     
     ds_time_mean = ds[vars].copy()
 
@@ -378,7 +378,42 @@ def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max 
 ##################################### READ OUTPUTS ################################
 
 
-def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True):
+def file_list_(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True):
+    cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
+    filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
+
+    cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
+    filz_amoc = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
+    filz_nemo = cart + f'{exp}_oce_1m_T_*.nc'
+    filz_ice = cart + f'{exp}_ice_1m_*.nc'
+    # ftv3_oce_1m_diaptr2d_1991-1991.nc -> hf_basin
+
+    if remove_last_year:
+        # Still running, remove last year
+        fils = glob.glob(filz_exp)
+        fils.sort()
+        filz_exp = fils[:-1]
+
+        if coupled:
+            fils = glob.glob(filz_nemo)
+            fils.sort()
+            filz_nemo = fils[:-1]
+
+            fils = glob.glob(filz_ice)
+            fils.sort()
+            filz_ice = fils[:-1]
+
+            fils = glob.glob(filz_amoc)
+            fils.sort()
+            filz_amoc = fils[:-1]
+        else:
+            filz_amoc = []
+            filz_nemo = []
+            filz_ice = []
+
+    return filz_exp, filz_nemo, filz_amoc, filz_ice
+
+def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True, density= False):
     cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
     filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
 
@@ -411,11 +446,18 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
             filz_amoc = []
             filz_nemo = []
             filz_ice = []
+        
+    if density:
+        filz_rho = '../density/density_fields/' + f'{exp}/{exp}_*_density.nc'
 
-    return filz_exp, filz_nemo, filz_amoc, filz_ice
+        return    filz_exp, filz_nemo, filz_amoc, filz_ice, filz_rho
+    
+    else:
+        return filz_exp, filz_nemo, filz_amoc, filz_ice
 
 
-def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), atm_only = False, year_clim = None):
+
+def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), atm_only = False, year_clim = None, density=False):
     """
     Reads outputs and computes global means.
 
@@ -438,9 +480,12 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
     filz_nemo = dict()
     filz_ice = dict()
 
-    for exp, us in zip(exps, user):
-        filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp]= file_list(exp, us, cart_exp = cart_exp)
-        filz_rho[exp] =  '../density/density_fields/' + f'{exp}_density.nc'
+    if density:
+        for exp, us in zip(exps, user):
+            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
+    else:
+        for exp, us in zip(exps, user):
+            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
 
     atmmean_exp = dict()
     atmclim_exp = dict()
@@ -1000,6 +1045,11 @@ def plot_var_profile(clim_all, domain, vname, vcoord='deptht', exps = None, ref_
     ax.legend()
     ax.set_ylabel('Depth (m)')
 
+    power = 1/2  # o 1/1.5
+    fwd = lambda y: np.sign(y) * (abs(y) ** power)
+    inv = lambda y: np.sign(y) * (abs(y) ** (1/power))
+    ax.set_yscale('function', functions=(fwd, inv))
+
     fig.savefig(cart_out + f'check_profile_{domain}_{vname}_{'-'.join([exp for exp in exps])}.pdf')
     
     return fig
@@ -1013,7 +1063,7 @@ def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
 ################################################ MAIN FUNCTION ###########################
 
 
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None):
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, density=False):
     """
     Runs all multi-exps diagnostics.
 
@@ -1034,7 +1084,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     if not os.path.exists(cart_out_figs): os.mkdir(cart_out_figs)
 
     ### read outputs for all exps
-    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim)
+    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density)
 
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
@@ -1052,7 +1102,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 
     ##### CAN ADD NEW DIAGS HERE
     if coupled:
-        rolling = 10 # None
+        rolling =  20
         fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling)
         fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling)
         fig_heatc = plot_var_ts(clim_all, 'oce', 'heatc', cart_out = cart_out_figs, rolling=rolling)

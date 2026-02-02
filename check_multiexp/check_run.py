@@ -389,87 +389,42 @@ def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max 
 
 ##################################### READ OUTPUTS ################################
 
+def file_list(exp, user, cart_exp='/ec/res4/scratch/{}/ece4/', remove_last_year=False, discard_first_year=False, coupled=True, density=False):
+    
+    ptrn_atm = f'{cart_exp.format(user)}/{exp}/output/oifs/{exp}_atm_cmip6_1m_*.nc'
+    ptrn_oce = f'{cart_exp.format(user)}/{exp}/output/nemo/'
 
-def file_list_(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True):
-    cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
-    filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
+    # lists
+    filz_exp = sorted(glob.glob(ptrn_atm))
+    filz_nemo = sorted(glob.glob(ptrn_oce + f'{exp}_oce_1m_T_*.nc')) if coupled else []
+    filz_ice = sorted(glob.glob(ptrn_oce + f'{exp}_ice_1m_*.nc')) if coupled else []
+    filz_amoc = sorted(glob.glob(ptrn_oce + f'{exp}_oce_1m_diaptr3d_*.nc')) if coupled else []
 
-    cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
-    filz_amoc = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
-    filz_nemo = cart + f'{exp}_oce_1m_T_*.nc'
-    filz_ice = cart + f'{exp}_ice_1m_*.nc'
-    # ftv3_oce_1m_diaptr2d_1991-1991.nc -> hf_basin
+    # if still running remove last year
+    if discard_first_year:
+        if len(filz_exp) > 0: filz_exp = filz_exp[1:]
+        if coupled:
+            if len(filz_nemo) > 0: filz_nemo = filz_nemo[1:]
+            if len(filz_ice) > 0: filz_ice = filz_ice[1:]
+            if len(filz_amoc) > 0: filz_amoc = filz_amoc[1:]
+        
 
     if remove_last_year:
-        # Still running, remove last year
-        fils = glob.glob(filz_exp)
-        fils.sort()
-        filz_exp = fils[:-1]
-
+        if len(filz_exp) > 0: filz_exp = filz_exp[:-1]
         if coupled:
-            fils = glob.glob(filz_nemo)
-            fils.sort()
-            filz_nemo = fils[:-1]
-
-            fils = glob.glob(filz_ice)
-            fils.sort()
-            filz_ice = fils[:-1]
-
-            fils = glob.glob(filz_amoc)
-            fils.sort()
-            filz_amoc = fils[:-1]
-        else:
-            filz_amoc = []
-            filz_nemo = []
-            filz_ice = []
-
-    return filz_exp, filz_nemo, filz_amoc, filz_ice
-
-def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True, density= False):
-    cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
-    filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
-
-    cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
-    filz_amoc = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
-    filz_nemo = cart + f'{exp}_oce_1m_T_*.nc'
-    filz_ice = cart + f'{exp}_ice_1m_*.nc'
-
-    # ftv3_oce_1m_diaptr2d_1991-1991.nc -> hf_basin
-
-    if remove_last_year:
-        # Still running, remove last year
-        fils = glob.glob(filz_exp)
-        fils.sort()
-        filz_exp = fils[:-1]
-
-        if coupled:
-            fils = glob.glob(filz_nemo)
-            fils.sort()
-            filz_nemo = fils[:-1]
-
-            fils = glob.glob(filz_ice)
-            fils.sort()
-            filz_ice = fils[:-1]
-
-            fils = glob.glob(filz_amoc)
-            fils.sort()
-            filz_amoc = fils[:-1]
-        else:
-            filz_amoc = []
-            filz_nemo = []
-            filz_ice = []
+            if len(filz_nemo) > 0: filz_nemo = filz_nemo[:-1]
+            if len(filz_ice) > 0: filz_ice = filz_ice[:-1]
+            if len(filz_amoc) > 0: filz_amoc = filz_amoc[:-1]
         
     if density:
-        filz_rho = '../density/density_fields/' + f'{exp}/{exp}_*_density.nc'
-
-        return    filz_exp, filz_nemo, filz_amoc, filz_ice, filz_rho
+        filz_rho = sorted(glob.glob('../density/density_fields/' + f'{exp}/{exp}_*_density.nc'))
+        return filz_exp, filz_nemo, filz_amoc, filz_ice, filz_rho
     
-    else:
-        return filz_exp, filz_nemo, filz_amoc, filz_ice
+    return filz_exp, filz_nemo, filz_amoc, filz_ice
 
 
 
-def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), atm_only = False, year_clim = None, density=False):
+def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), atm_only = False, year_clim = None, discard_first_year=False, density=False):
     """
     Reads outputs and computes global means.
 
@@ -494,10 +449,10 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
 
     if density:
         for exp, us in zip(exps, user):
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
+            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, discard_first_year=discard_first_year, density=True)
     else:
         for exp, us in zip(exps, user):
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
+            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, discard_first_year=discard_first_year)
 
     atmmean_exp = dict()
     atmclim_exp = dict()
@@ -560,7 +515,7 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
             except OSError as err:
                 print(err)
                 print('Run still ongoing, removing last year')
-                filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = True, coupled = coupled)
+                filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = True, discard_first_year=discard_first_year, coupled = coupled)
                 ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
                 
             ds_new = ds.sel(time_counter = slice(f'{last_year+1}0101', None))
@@ -667,7 +622,7 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
             except OSError as err:
                 print(err)
                 print('Run still ongoing, removing last year')
-                filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = True, coupled = coupled)
+                filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = True, discard_first_year=discard_first_year, coupled = coupled)
 
                 ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
 
@@ -782,12 +737,13 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
     ylim_tot = ax.get_ylim()
     
     #PD
-    tas_clim_PD = 287.29
-    net_toa_clim_PD = 0.6
+    tas_clim_PD = 288.28
+    net_toa_clim_PD = 1.06
     
     #PI
     tas_clim_PI = 286.65
     net_toa_clim_PI = 0.
+
 
     if exp_type == 'PI' or exp_type == 'all':
         tas_clim = tas_clim_PI
@@ -795,21 +751,37 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
         ax.fill_betweenx(np.arange(ylim_tot[0], ylim_tot[1], 0.1), tas_clim - 0.15, tas_clim + 0.15, color = 'grey', alpha = 0.2, edgecolor = None, zorder = 0)
         ax.fill_between(np.arange(xlim_tot[0], xlim_tot[1], 0.1), net_toa_clim - imbalance - 0.15, net_toa_clim - imbalance + 0.15, color = 'grey', alpha = 0.2, edgecolor = None, zorder = 0)
     
+    #if exp_type == 'PD' or exp_type == 'all':
+    #   tas_clim = tas_clim_PD
+    #   net_toa_clim = net_toa_clim_PD
+    #    ax.fill_betweenx(np.arange(ylim_tot[0], ylim_tot[1], 0.1), tas_clim - 0.15, tas_clim + 0.15, color = 'burlywood', alpha = 0.2, edgecolor = None, zorder = 0)
+    #    ax.fill_between(np.arange(xlim_tot[0], xlim_tot[1], 0.1), net_toa_clim - imbalance - 0.15, net_toa_clim - imbalance + 0.15, color = 'burlywood', alpha = 0.2, edgecolor = None, zorder = 0)
+
+
     if exp_type == 'PD' or exp_type == 'all':
+        # --- domini fisici (PD only, TEMPORANEO ma corretto) ---
         tas_clim = tas_clim_PD
         net_toa_clim = net_toa_clim_PD
-        ax.fill_betweenx(np.arange(ylim_tot[0], ylim_tot[1], 0.1), tas_clim - 0.15, tas_clim + 0.15, color = 'burlywood', alpha = 0.2, edgecolor = None, zorder = 0)
-        ax.fill_between(np.arange(xlim_tot[0], xlim_tot[1], 0.1), net_toa_clim - imbalance - 0.15, net_toa_clim - imbalance + 0.15, color = 'burlywood', alpha = 0.2, edgecolor = None, zorder = 0)
+        xlim_pd = (286.5, 288.9)
+        ylim_pd = (-2, 4.5)
+        ax.set_xlim(xlim_pd)
+        ax.set_ylim(ylim_pd)
+        # banda verticale (tas)
+        ax.fill_betweenx(np.linspace(ylim_pd[0], ylim_pd[1], 300), tas_clim - 0.4, tas_clim + 0.4, color='burlywood', alpha=0.25, zorder=0)
+        # banda orizzontale (net TOA)
+        ax.fill_between(np.linspace(xlim_pd[0], xlim_pd[1], 300), net_toa_clim - imbalance - 0.4, net_toa_clim - imbalance + 0.4, color='burlywood', alpha=0.25, zorder=1)
 
-    
     ax.set_xlabel('GTAS (K)')
     ax.set_ylabel('net TOA (W/m$^2$)')
+
+    ax.legend( loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=True)
+    
     plt.legend()
 
     if ylim is not None:
         ax.set_ylim(ylim)
 
-    fig.savefig(cart_out + f'check_tuning_{'-'.join(exps)}.pdf')
+    fig.savefig(cart_out + f'check_tuning_{'-'.join(exps)}.pdf', bbox_inches='tight')
     plt.show()
 
     return fig
@@ -1015,8 +987,7 @@ def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted =
 
     return figs
 
-def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weighted=False, 
-                             datadir=None, cart_out=None, colors=None, ylim=None):
+def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weighted=False, datadir=None, cart_out=None, colors=None, ylim=None):
     """
     plot_anomalies: plots anomalies wrt reference experiment
     weighted: weights for cosine of latitude
@@ -1088,8 +1059,7 @@ def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weigh
 
     return figs
 
-def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, 
-                               plot_anomalies=True, weighted=False, colors=None, ylim=None):
+def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, plot_anomalies=True, weighted=False, colors=None, ylim=None):
     """
     Genera un plot per ciascun parametro modificato (± variazione) confrontando vs ref_exp.
 
@@ -1606,7 +1576,7 @@ def plot_all_slopes(slope_dict, r2_dict=None, vmin=-3, vmax=3, cmap='RdBu_r',
 
 
 # Wrapper for slope and plots
-def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
+def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
                                   cart_exp='/ec/res4/scratch/{}/ece4/', var='toa_net',
                                   threshold=0.1, target_grid='r180x90', r2_thresh=0.5):
     """
@@ -1622,21 +1592,23 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
     os.environ["NUMEXPR_NUM_THREADS"] = "1"
     dask.config.set(scheduler='single-threaded')
 
-    slope_dict, r2_dict, anom_full_dict, slope_50pct_dict = {}, {}, {}, {}
+    slope_dict, r2_dict, anom_full_dict, slope_30pct_dict = {}, {}, {}, {}
 
     # --- load tuning values
-    param_folder = '/ec/res4/hpcperm/ecme3038/ecearth/ecearth4/ECtuner/exps_413lr/'
+    param_folder = '/ec/res4/hpcperm/ecme3038/ecearth/ecearth4/ECtuner/exps_415/'
     param_yaml = load_param_values(param_folder)
 
     def normalize_exp_key(exp, available_keys):
-        exp_num = exp.replace('n', '').lstrip('0') or '0'
+        exp_num = exp.replace('k', '').lstrip('0') or '0'
         key = exp_num.zfill(2)
         if key not in available_keys:
             raise KeyError(f"No matching experiment '{exp}' in YAML ({list(available_keys)})")
         return key
 
     for param, exps in param_map.items():
-        
+
+        print(f"\n=== PARAM {param} | exps = {exps}")
+
         if len(exps) != 2:
             print(f"Parameter {param} does not have two experiments. Skip.")
             continue
@@ -1663,13 +1635,18 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
             ds = ds.groupby('time.year').mean()
             ds_dict[exp] = ds
 
+            print(f"  Loaded dataset for {exp}: dims={list(ds.dims.keys())}")
+
         # --- retrieve parameter values
+        print("  YAML keys:", sorted(param_yaml.keys()))
+        print(f"  Trying to match exps: minus={exp_minus}, ref={ref_exp}, plus={exp_plus}")
         try:
             key_minus = normalize_exp_key(exp_minus, param_yaml.keys())
             key_ref   = normalize_exp_key(ref_exp,   param_yaml.keys())
             key_plus  = normalize_exp_key(exp_plus,  param_yaml.keys())
         except KeyError as e:
-            print(f"Skip {param}: {e}")
+            print(f"❌ Skip {param}: {e}")
+            print("   Available YAML keys:", sorted(param_yaml.keys()))
             continue
 
         p_minus = float(param_yaml[key_minus][param])
@@ -1689,35 +1666,35 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
         anom_full.attrs['descr'] = f"TOA change for Δparam={delta_full:.3g}"
 
         # --- slope normalized per 1%
-        slope_per50pct = slope * (abs(p_ref) * 0.5 if p_ref not in [0, None, np.nan] else np.nan)
-        slope_per50pct.name = f"{param}_slope_per50pct"
-        slope_per50pct.attrs['units'] = 'W/m² per 50%'
+        slope_per30pct = slope * (abs(p_ref) * 0.3 if p_ref not in [0, None, np.nan] else np.nan)
+        slope_per30pct.name = f"{param}_slope_per30pct"
+        slope_per30pct.attrs['units'] = 'W/m² per 30%'
 
         slope_dict[param] = slope
         r2_dict[param] = r2
         anom_full_dict[param] = anom_full
-        slope_50pct_dict[param] = slope_per50pct
+        slope_30pct_dict[param] = slope_per30pct
 
         r2_mean = slope.attrs.get('r2_mean', np.nan)
         r2_min  = slope.attrs.get('r2_min', np.nan)
         print(f" {param}: mean R²={r2_mean:.3f}, min R²={r2_min:.3f}")
 
-    # --- Plot 1: slope per 50%
-    print("\nPlot 1: Sensitivity normalized (W/m² per 50%)")
-    plot_all_slopes(slope_50pct_dict, r2_dict=r2_dict, vmin=-3, vmax=3, cmap='RdBu_r', r2_thresh=r2_thresh,
-                    filename='plot_slope_per50pct.png', label='TOA Net (W/m² per 50% param change)')
+    # --- Plot 1: slope per 30%
+    print("\nPlot 1: Sensitivity normalized (W/m² per 30%)")
+    plot_all_slopes(slope_30pct_dict, r2_dict=r2_dict, vmin=-3, vmax=3, cmap='RdBu_r', r2_thresh=r2_thresh,
+                    filename='plot_slope_per30pct.png', label='TOA Net (W/m² per 30% param change)')
 
     # --- Plot 2: physical effect (total anomaly)
     print("\nPlot 2: Total effect minus→plus (W/m²)")
     plot_all_slopes(anom_full_dict, r2_dict=r2_dict, vmin=-10, vmax=10, cmap='RdBu_r', r2_thresh=r2_thresh,
                     filename='plot_anom_full.png', label='TOA Net anomaly (W/m²)')
 
-    return slope_dict, r2_dict, slope_50pct_dict, anom_full_dict
+    return slope_dict, r2_dict, slope_30pct_dict, anom_full_dict
 
 # ============================================================
 ################################################ MAIN FUNCTION ###########################
 
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD'):
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, discard_first_year=True, exp_type = 'PD'):
     """
     Runs all multi-exps diagnostics.
 
@@ -1738,7 +1715,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     if not os.path.exists(cart_out_figs): os.mkdir(cart_out_figs)
 
     ### read outputs for all exps
-    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density)
+    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, discard_first_year=discard_first_year, density=None)
 
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
@@ -1791,10 +1768,6 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     if plot_param:
         if 'atm_clim' not in clim_all:
             raise KeyError("Expected 'atm_clim' in clim_all, but not found.")
-        if skip_first_year:
-            for exp, ds in clim_all['atm_clim'].items():
-                if ds is not None and 'year' in ds.coords:
-                    clim_all['atm_clim'][exp] = ds.isel(year=slice(1, None))
 
         figs_param = plot_zonal_fluxes_by_param(
             atm_clim=clim_all['atm_clim'],
@@ -1849,7 +1822,7 @@ def main(config_path = None):
     plot_param = config.get('plot_param', False)
     plot_diffref = config.get('plot_diffref', False)
     param_map = config.get('param_map', {})
-    skip_first_year = config.get('skip_first_year', False)
+    discard_first_year = config.get('discard_first_year', True)
     
 
     if user is None:
@@ -1862,7 +1835,7 @@ def main(config_path = None):
     print(f"Cart exp: {cart_exp}")
     print(f"Cart out: {cart_out}")
 
-    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
+    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map, discard_first_year=discard_first_year)
 
     return clim_all, figs
     

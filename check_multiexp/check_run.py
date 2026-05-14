@@ -1700,38 +1700,34 @@ def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
 # ============================================================
 # FUNCTIONS FOR PARAMETERS PLOTS
 def load_param_values(folder):
-    """
-    Reads all tuning_XX.yml files in the specified folder and returns
-    a dictionary with parameter values for each experiment.
-    Also handles YAML files starting with '- base.context:'.
-    """
     param_dict = {}
-    for f in glob.glob(os.path.join(folder, "tuning_*.yml")):
+    # Cerchiamo tutti i file tuning_p*.yml
+    for f in glob.glob(os.path.join(folder, "tuning_p*.yml")):
+        # Se il file è /path/tuning_p001.yml -> exp_name diventa "p001"
         exp_name = os.path.basename(f).replace("tuning_", "").replace(".yml", "")
+        
         with open(f) as fin:
             data = yaml.safe_load(fin)
 
-        # If it's a list extract the first element
         if isinstance(data, list) and len(data) > 0:
             data = data[0]
 
         try:
             tuning = data['base.context']['model_config']['oifs']['tuning']
+            params = {}
+            for block in tuning.values():
+                for k, v in block.items():
+                    if v is not None:
+                        try:
+                            params[k] = float(v)
+                        except ValueError:
+                            continue
+            param_dict[exp_name] = params
         except Exception as e:
-            print(f"⚠️ Skipping {f}: unexpected YAML structure ({type(data)}). Error: {e}")
+            print(f"⚠️ Skipping {f}: {e}")
             continue
 
-        params = {}
-        for block in tuning.values():
-            for k, v in block.items():
-                if v is not None:
-                    try:
-                        params[k] = float(v)
-                    except ValueError:
-                        print(f"⚠️ Non-numeric value for {k} in {f}: {v}")
-        param_dict[exp_name] = params
-
-    print(f"Loaded {len(param_dict)} tuning files from {folder}")
+    print(f"Caricati {len(param_dict)} file di tuning. Chiavi trovate: {list(param_dict.keys())[:5]}...")
     return param_dict
 
 def compute_slope_and_linearity(ds_minus, ds_ref, ds_plus, param_name, param_values, var='toa_net'):
@@ -1806,11 +1802,8 @@ def regrid_to_regular_smm_safe(ds, target_grid="r180x90", method="ycon", grid_in
     import shutil
     from smmregrid import cdo_generate_weights, Regridder
 
-    os.environ["PATH"] += ":/usr/local/apps/cdo/2.5.1/bin"
-    os.environ["CDO_PTHREADS"] = "1"
-
     if shutil.which("cdo") is None:
-        print("CDO not found in PATH. Skip regridding.")
+        print("CDO non trovato! Controlla l'installazione mamba.")
         return ds
 
     if 'cell' not in ds.dims:
@@ -1902,7 +1895,7 @@ def plot_all_slopes(slope_dict, r2_dict=None, vmin=-3, vmax=3, cmap='RdBu_r',
 
 
 # Wrapper for slope and plots
-def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
+def calc_and_plot_slopes_from_raw(param_map, ref_exp='p000', user=None,
                                   cart_exp='/ec/res4/scratch/{}/ece4/', var='toa_net',
                                   threshold=0.1, target_grid='r180x90', r2_thresh=0.5):
     """
@@ -1911,25 +1904,33 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
       (2) total anomaly minus→plus
     Masks non-significant areas based on R².
     """
-    import os, dask
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
-    dask.config.set(scheduler='single-threaded')
+    import os
+    import multiprocessing
+
+    # 1. Recupera il numero di CPU assegnate da SLURM 
+    n_cpus = int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count()))
+
+    os.environ["OMP_NUM_THREADS"] = str(n_cpus)
+    os.environ["MKL_NUM_THREADS"] = str(n_cpus)
+    os.environ["OPENBLAS_NUM_THREADS"] = str(n_cpus)
+
+    import dask
+    dask.config.set(scheduler='threads', num_workers=n_cpus)
+
+    print(f"Dask configurato con {n_cpus} threads.")
 
     slope_dict, r2_dict, anom_full_dict, slope_30pct_dict = {}, {}, {}, {}
 
     # --- load tuning values
-    param_folder = '/ec/res4/hpcperm/ecme3038/ecearth/ecearth4/ECtuner/exps_415/'
+    param_folder = '/ec/res4/hpcperm/ecme3038/ecearth/ecearth4/ECtuner/ectuner/perturb_exps/exps_TL63_v2/'
     param_yaml = load_param_values(param_folder)
 
     def normalize_exp_key(exp, available_keys):
-        exp_num = exp.replace('k', '').lstrip('0') or '0'
-        key = exp_num.zfill(2)
-        if key not in available_keys:
-            raise KeyError(f"No matching experiment '{exp}' in YAML ({list(available_keys)})")
-        return key
+        # Se exp è "p001", cerchiamo direttamente "p001" nelle chiavi del dizionario YAML
+        if exp in available_keys:
+            return exp
+        else:
+            raise KeyError(f"L'esperimento '{exp}' non è presente tra i file YAML caricati! Chiavi disponibili: {list(available_keys)}")
 
     for param, exps in param_map.items():
 
@@ -1948,7 +1949,7 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
             filz = glob.glob(f'{cart_exp.format(user)}/{exp}/output/oifs/{exp}_atm_cmip6_1m_*.nc')
             if not filz:
                 raise FileNotFoundError(f"NetCDF files not found for {exp}")
-            ds = xr.open_mfdataset(filz, use_cftime=True, chunks={})
+            ds = xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 120})
             ds = ds[['rsut', 'rlut', 'rsdt', 'tas']]
             if 'cell' in ds.dims:
                 print(f"Regridding {exp} with CDO on {target_grid}...")
@@ -2172,6 +2173,43 @@ def main(config_path = None):
     clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
 
     return clim_all, figs
+
+# def main():
+# # --- 1. SETTINGS ESPLICITI ---
+#     # Inserisci qui il tuo ID utente EC per i percorsi /scratch/
+#     user = 'ecme3038' 
+#     ref_exp = 'p000'
+#     cart_exp = '/ec/res4/scratch/{}/ece4/'
+    
+#     # --- 2. MAPPA PARAMETRI / ESPERIMENTI ---
+#     params_list = [
+#         "RPRCON", "ENTRORG", "DETRPEN", "ENTRDD", "RMFDEPS", "RVICE", 
+#         "RLCRITSNOW", "RSNOWLIN2", "RCLDIFF", "RCLDIFF_CONVI", 
+#         "RDEPLIQREFRATE", "RDEPLIQREFDEPTH", "RCL_OVERLAPLIQICE", 
+#         "RCL_INHOMOGAUT", "RCL_INHOMOGACC", "RMINICE"
+#     ]
+
+#     param_map = {}
+#     for i, p_name in enumerate(params_list):
+#         idx_minus = 2 * i + 1
+#         idx_plus  = 2 * i + 2
+#         param_map[p_name] = [f"p{idx_minus:03d}", f"p{idx_plus:03d}"]
+
+#     # --- 3. ESECUZIONE ---
+#     print(f"Lancio analisi per l'utente: {user}")
+#     print(f"Esperimenti rilevati: {len(param_map)} coppie + {ref_exp}")
+
+#     # Lanciamo la funzione che genera le mappe
+#     calc_and_plot_slopes_from_raw(
+#         param_map=param_map, 
+#         ref_exp=ref_exp, 
+#         user=user, 
+#         cart_exp=cart_exp, 
+#         var='toa_net', 
+#         threshold=0.1, 
+#         target_grid='r180x90'
+#     )
+    
     
 
 # Main execution

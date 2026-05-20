@@ -1,8 +1,9 @@
+from curses import window
+
 import xarray as xr
 from matplotlib import pyplot as plt
 import numpy as np
 import os
-import xarray_regrid
 import pandas as pd
 import xmca
 from xmca.array import MCA  # numpy
@@ -18,7 +19,7 @@ import cmocean as cmo
 from scipy import stats
 import cartopy.crs as ccrs
 import matplotlib.gridspec as gridspec # GRIDSPEC !
-
+import scipy
 import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
 #import xesmf as xe
@@ -220,6 +221,7 @@ def global_mean_oce_3d(ds, exp, user, vars, cart_exp = cart_exp, compute = True,
     ds_time_mean = ds[vars].copy()
 
     if(singlelevel):
+        print('Global mean for one vertical level only, lev = ', lev)
         for var in ds.data_vars:
             if var in vars:
                 if(var == 'Nsquared'):
@@ -228,9 +230,10 @@ def global_mean_oce_3d(ds, exp, user, vars, cart_exp = cart_exp, compute = True,
                     v_grid = 'deptht'
                 v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid)
                 v_area = (v_mask*area).sum(axis=(1,2))
-                ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute()
-                ds_time_mean[var] = ds_time_mean[var]/v_area[lev].values                
+                ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute().isel(depth_mid=lev, drop=True)
+                ds_time_mean[var] = ds_time_mean[var]/v_area[lev].values   
     else:
+        print('Global mean for all vertical levels')
         for var in ds.data_vars:
             if var in vars:
                 if(var == 'Nsquared'):
@@ -238,23 +241,27 @@ def global_mean_oce_3d(ds, exp, user, vars, cart_exp = cart_exp, compute = True,
                 else:
                     v_grid = 'deptht'
                 v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid)
-                v_area = (v_mask*area).sum(axis=(1,2))                
-                ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute()
-                ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
 
-                print(ds_time_mean)
                 if depth_mean:
                     # get layer thicknesses as weights
-                    e3t = ds_time_mean['e3t']  # shape: (lev, y, x)
-                    # weighted sum over depth: weight each level by its thickness * mask
-                    thick_weights = (e3t * v_mask).sum(axis=(1, 2))   # total weighted thickness per level
-                    total_depth = thick_weights.sum(axis=0)            # scalar: total ocean depth
-                    ds_time_mean[var] = (ds_time_mean[var] * thick_weights.values).sum(dim=v_grid) / total_depth.values
+                    # I think I miss half of the deepest vertical levels
+                    v_levels = ds['density']['deptht']
 
-    
+                    #mid_points = (v_levels[1:].values + v_levels[:-1].values)/2
+                    dz_mid = np.diff(v_levels)
+                    thick_weights = (dz_mid[:,np.newaxis, np.newaxis] * area * v_mask)   # total weighted thickness per level
+                    total_depth = thick_weights.sum() # total ocean volume
+                    ds_time_mean[var] = (ds[var] * thick_weights.values).sum() / total_depth.values
+                
+                else:
+                    #test without thickness weights, just mask and area
+                    v_area = (v_mask*area).sum(axis=(1,2))                
+                    ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute()
+                    ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
+        
     return ds_time_mean
     
-def global_mean_oce_3d_region(ds, exp, user, vars, cart_exp = cart_exp, lats=None, compute = True, grid = 'T', singlelevel = False, lev = 0):
+def global_mean_oce_3d_region(ds, exp, user, vars, cart_exp = cart_exp, lats=None, lev_bounds=None, compute = True, grid = 'T', singlelevel = False, lev = 0, depth_mean= False):
     
     area = get_areas_nemo(exp, user, cart_exp = cart_exp, grid = grid)
     ds_time_mean = ds[vars].copy()
@@ -282,12 +289,33 @@ def global_mean_oce_3d_region(ds, exp, user, vars, cart_exp = cart_exp, lats=Non
                 else:
                     v_grid = 'deptht'
                 mask_reg = (ds[var].nav_lat>lats[0]) & (ds[var].nav_lat<lats[1])
-                area_reg = (area*mask_reg).sel(x=slice(lats[0], lats[1]))
+                area_reg = (area*mask_reg) #.sel(x=slice(lats[0], lats[1]))
                 v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid)
-                v_mask = v_mask.sel(x=slice(lats[0], lats[1]))
-                v_area = (v_mask*area_reg).sum(axis=(1,2))
-                ds_time_mean[var] = (ds[var].sel(x=slice(lats[0],lats[1]))*area_reg*v_mask).sum(['x', 'y']).compute()
-                ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
+
+                v_mask = v_mask.where(mask_reg) #sel(x=slice(lats[0], lats[1]))
+
+                if depth_mean:
+                    v_levels = ds['density']['deptht']          
+                    levels = (v_levels[:-1] + v_levels[1:])/ 2 # this line is not working, is summing the same values with each other!!!
+
+                    dz_mid = np.diff(v_levels)   # shape (n_lev-1,), thickness between cell centers                                  # shape (n_lev,) same as v_levels
+        
+                    levels = (v_levels[1:].values + v_levels[:-1].values)/2
+
+                    l1 = np.where(levels>lev_bounds[0])[0][0]
+                    l2 = np.where(levels>lev_bounds[1])[0][0]
+                    #print(levels[l1], levels[l2])
+                    thick_weights = (area_reg * v_mask *dz_mid).transpose('depth_mid', 'y', 'x')[l1:l2]
+
+                    total_depth = thick_weights.sum()
+                    ds_time_mean[var] = (ds[var].where(mask_reg)[l1:l2] * thick_weights.values).sum() / total_depth.values
+                
+                else:
+
+                    v_area = (v_mask*area_reg).sum(axis=(1,2))
+                    ds_time_mean[var] = (ds[var].where(mask_reg) *area_reg*v_mask).sum(['x', 'y']).compute()
+                    ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
+
     
     return ds_time_mean
 
@@ -338,6 +366,15 @@ def compute_atm_map(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas 
 
     if cart_out is not None:
         ds.to_netcdf(cart_out + f'map_tuning_{exp}.nc')
+
+    return ds
+
+def compute_atm3d_map(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None):
+    ds = ds.rename({'time_counter': 'time'})
+    ds = ds[atmvars].groupby('time.year').mean().compute()
+
+    if cart_out is not None:
+        ds.to_netcdf(cart_out + f'map_atm3d_tuning_{exp}.nc')
 
     return ds
 
@@ -505,8 +542,9 @@ def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max 
 ##################################### READ OUTPUTS ################################
 
 def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True, density= False):
-    cart = f'{cart_exp.format(user)}/{exp}/output/oifs_remap/'
+    cart = f'{cart_exp.format(user)}/{exp}/output/oifs/' #_remap/'
     filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
+    filz_atm3d = cart + f'{exp}_atm_cmip6_pl_*.nc'
 
     cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
     filz_amoc = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
@@ -520,6 +558,10 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
         fils = glob.glob(filz_exp)
         fils.sort()
         filz_exp = fils[:-1]
+
+        fils = glob.glob(filz_atm3d)
+        fils.sort()
+        filz_atm3d = fils[:-1]
 
         if coupled:
             fils = glob.glob(filz_nemo)
@@ -541,12 +583,12 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
     if density:
         filz_rho = '../density/density_fields/' + f'{exp}/{exp}_*_density.nc'
 
-        return    filz_exp, filz_nemo, filz_amoc, filz_ice, filz_rho
+        return filz_exp, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho
 
     else:
-        return filz_exp, filz_nemo, filz_amoc, filz_ice
+        return filz_exp, filz_atm3d, filz_nemo, filz_amoc, filz_ice
 
-def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas rlnt rlntcs rsnt rsntcs'.split(), ocevars = 'tos qt_oce'.split(), icevars='siconc'.split(), atm_only = False, year_clim = None, density=False, density_only=False):
+def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas rlnt rlntcs rsnt rsntcs'.split(), atmvars3d='ta ua va'.split(), ocevars = 'tos qt_oce'.split(), icevars='siconc'.split(), atm_only = False, year_clim = None, density=False, density_only=False):
     """
     Reads outputs and computes global means.
 
@@ -564,13 +606,15 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
             raise ValueError(f"Length not corresponding: exps {len(exps)}, user {len(user)}")
 
     filz_exp = dict()
+    filz_atm3d = dict()
     filz_nemo = dict()
     filz_ice = dict()
 
     for exp, us in zip(exps, user):
-            filz_exp[exp], filz_nemo[exp], _, filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
+            filz_exp[exp], filz_atm3d[exp], filz_nemo[exp], _, filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
         
     atmmap_exp = dict()
+    atmmap3d_exp = dict()
     ocemap_exp = dict()
     icemap_exp = dict()
 
@@ -581,12 +625,10 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
 
     for exp, us in zip(exps, user):
         print(exp)
-        if os.path.exists(cart_out + f'map_ice_tuning_{exp}.nc') and exp not in read_again:
+        if os.path.exists(cart_out + f'map_atm3d_tuning_{exp}_analysis.nc') and exp not in read_again:
             print('Already computed, reading clim..')
             existing_atm = xr.load_dataset(cart_out + f'map_tuning_{exp}.nc')
-
             existing_vars = list(existing_atm.data_vars)
-            
             missing_vars = [v for v in atmvars if v not in existing_vars]
             
             if len(missing_vars) == 0:
@@ -594,7 +636,8 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
             
             else:
                 print(f'Computing missing ATM vars: {missing_vars}')
-                ds = xr.open_mfdataset(filz_exp[exp],use_cftime=True,chunks={'time_counter': 240})
+                time_coder = xr.coders.CFDatetimecoder(use_cftime=True)
+                ds = xr.open_mfdataset(filz_exp[exp],decode_times=time_coder,chunks={'time_counter': 240})
 
                 new_atm = compute_atm_map(ds,exp,cart_out=cart_out,atmvars=missing_vars,year_clim=year_clim)
 
@@ -604,6 +647,8 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
 
                 atmmap_exp[exp] = updated_atm
 
+            atmmap3d_exp[exp] = xr.load_dataset(cart_out + f'map_atm3d_tuning_{exp}_500hPa.nc')
+
             if coupled:
                 if os.path.exists(cart_out + f'map_oce_tuning_{exp}.nc'):
                     ocemap_exp[exp] = xr.load_dataset(cart_out + f'map_oce_tuning_{exp}.nc')
@@ -611,35 +656,38 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
                 
         else:
             print('Computing clim...')
+            time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
 
             if os.path.exists(cart_out + f'map_tuning_{exp}.nc'):
 
-                atmmap_exp[exp] = xr.load_dataset(cart_out + f'map_tuning_{exp}.nc', use_cftime=True, chunks = {'time_counter': 240})
-                ocemap_exp[exp] = xr.load_dataset(cart_out + f'map_oce_tuning_{exp}.nc', use_cftime=True, chunks = {'time_counter': 240})
-
-                ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks = {'time_counter': 240})
-                icemap_exp[exp] = compute_ice_map(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, icevars = icevars, year_clim = year_clim)
+                atmmap_exp[exp] = xr.load_dataset(cart_out + f'map_tuning_{exp}.nc', decode_times=time_coder, chunks = {'time_counter': 240})
+                ocemap_exp[exp] = xr.load_dataset(cart_out + f'map_oce_tuning_{exp}.nc', decode_times=time_coder, chunks = {'time_counter': 240})
+                icemap_exp[exp] = xr.load_dataset(cart_out + f'map_ice_tuning_{exp}.nc', decode_times=time_coder, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_atm3d[exp], decode_times=time_coder, chunks = {'time_counter': 240})
+                atmmap3d_exp[exp] = compute_atm3d_map(ds, exp, cart_out = cart_out, atmvars = atmvars3d, year_clim = year_clim)
 
             else:
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
-
+                ds = xr.open_mfdataset(filz_exp[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                 # ATM CLIM
                 atmmap_exp[exp] = compute_atm_map(ds, exp, cart_out = cart_out, atmvars = atmvars, year_clim = year_clim)
+                #atmmap3d_exp[exp] = compute_atm3d_map(ds, exp, cart_out = cart_out, atmvars = atmvars3d, year_clim = year_clim) 
 
                 if coupled:
                     # OCE CLIM
-                    ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     ocemap_exp[exp] = compute_oce_map(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, ocevars = ocevars, year_clim = year_clim)
 
-                    ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     icemap_exp[exp] = compute_ice_map(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, icevars = icevars, year_clim = year_clim)
 
                 
     clim_all = dict()
     clim_all['atm_map'] = atmmap_exp
+    clim_all['atm3d_map'] = atmmap3d_exp
     if coupled:
         clim_all['oce_map'] = ocemap_exp
         clim_all['ice_map'] = icemap_exp
+    
     return clim_all
 
 def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos hfds'.split(), icevars = 'siconc sivolu sithic'.split(), atm_only = False, year_clim = None, density=False, density_only=False):
@@ -653,6 +701,8 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
     year_clim: set years for computing climatologies (if None, considers last 20 years)
     """
 
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+
     if isinstance(user, str):
         user = len(exps)*[user]
     else:
@@ -660,6 +710,7 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
             raise ValueError(f"Length not corresponding: exps {len(exps)}, user {len(user)}")
 
     filz_exp = dict()
+    filz_atm3d = dict()
     filz_amoc = dict()
     filz_rho = dict()
     filz_nemo = dict()
@@ -667,10 +718,10 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
 
     if density or density_only:
         for exp, us in zip(exps, user):
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
+            filz_exp[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
     else:
         for exp, us in zip(exps, user):
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
+            filz_exp[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
     
     if density_only:
         clim_all = dict()
@@ -692,13 +743,13 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
             print('Computing density diagnostics')
 
             try:
-                ds = xr.open_mfdataset(filz_rho[exp],use_cftime=True, chunks={'time': 20},
+                ds = xr.open_mfdataset(filz_rho[exp],decode_times=time_coder, chunks={'time': 20},
                 )
             except OSError as err:
                 print(err)
                 print('Run still ongoing, removing last year')
                 _, _, _, _, filz_rho[exp] = file_list(exp,us,cart_exp=cart_exp,remove_last_year=True,density=True)
-                ds = xr.open_mfdataset(filz_rho[exp],use_cftime=True,chunks={'time': 20})
+                ds = xr.open_mfdataset(filz_rho[exp],decode_times=time_coder,chunks={'time': 20})
 
             rhomean_exp[exp], rhoclim_exp[exp] = compute_rho_clim(ds,exp,us,cart_exp=cart_exp,cart_out=cart_out,year_clim=year_clim)
 
@@ -773,12 +824,12 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
             
             # Read only new data starting from last_year + 1
             try:
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_exp[exp], decode_times=time_coder, chunks = {'time_counter': 240})
             except OSError as err:
                 print(err)
                 print('Run still ongoing, removing last year')
                 filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = True, coupled = coupled)
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_exp[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                 
             ds_new = ds.sel(time_counter = slice(f'{last_year+1}0101', None))
 
@@ -829,7 +880,7 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
                     
                     last_year_oce = int(ocemean_old.year[-1].values)
                     # OCE
-                    ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     ds_new = ds.sel(time_counter = slice(f'{last_year_oce+1}0101', None))
                     
                     if len(ds_new.time_counter) > 0:
@@ -845,7 +896,7 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
                     
                     # ICE
                     last_year_ice = int(icemean_old.year[-1].values)
-                    ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     ds_new = ds.sel(time_counter = slice(f'{last_year_ice+1}0101', None))
                     
                     if len(ds_new.time_counter) > 0:
@@ -861,7 +912,7 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
                     
                     # AMOC
                     last_year_amoc = int(amoc_ts_old.year[-1].values)
-                    ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     ds_new = ds.sel(time_counter = slice(f'{last_year_amoc+1}0101', None))
                     
                     if len(ds_new.time_counter) > 0:
@@ -877,24 +928,24 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
                 else:
                     # Legacy path - recompute everything
                     print('Legacy format detected, recomputing from scratch')
-                    ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     oceclim_exp[exp], ocemean_exp[exp] = compute_oce_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, ocevars = ocevars, year_clim = year_clim)
-                    ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     iceclim_exp[exp], icemean_exp[exp] = compute_ice_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, icevars = icevars, year_clim = year_clim)
-                    ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True, chunks = {'time_counter': 240})
+                    ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                     amoc_mean_exp[exp], amoc_ts_exp[exp] = compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = year_clim)
         
         else:
             print('Computing clim...')
 
             try:
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_exp[exp], decode_times=time_coder, chunks = {'time_counter': 240})
             except OSError as err:
                 print(err)
                 print('Run still ongoing, removing last year')
                 filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = True, coupled = coupled)
 
-                ds = xr.open_mfdataset(filz_exp[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_exp[exp], decode_times=time_coder, chunks = {'time_counter': 240})
 
             # ATM CLIM
             atmclim_exp[exp], atmmean_exp[exp] = compute_atm_clim(ds, exp, cart_out = cart_out, atmvars = atmvars, year_clim = year_clim)
@@ -904,17 +955,17 @@ def read_output(exps, user = None, read_again = [], cart_exp = cart_exp, cart_ou
             if coupled:
                 # OCE CLIM
                 
-                ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                 oceclim_exp[exp], ocemean_exp[exp] = compute_oce_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, ocevars = ocevars, year_clim = year_clim)
 
-                ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                 iceclim_exp[exp], icemean_exp[exp] = compute_ice_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, icevars = icevars, year_clim = year_clim)
 
-                ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True, chunks = {'time_counter': 240})
+                ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder, chunks = {'time_counter': 240})
                 amoc_mean_exp[exp], amoc_ts_exp[exp] = compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = year_clim)
                 
                 try:
-                    ds = xr.open_mfdataset(filz_rho[exp], use_cftime=True, chunks = {'time': 20})
+                    ds = xr.open_mfdataset(filz_rho[exp], decode_times=time_coder, chunks = {'time': 20})
                     rhomean_exp[exp], rhoclim_exp[exp] = compute_rho_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, year_clim = year_clim)
                     density = True
                 except OSError as err:
@@ -1613,7 +1664,7 @@ def plot_var_region(clim_all, domain, vname, lats, vcoord='deptht', exps = None,
         else:
             levels = ts_dataset.sel(exp = exp)[vname][vcoord]
 
-        if y_ref is not None: y = (y - y_ref)/y_ref
+        if y_ref is not None: y = (y - y_ref)#/y_ref
 
         ax.plot(y, -levels, label=exp, color= col)
         # ax.text(y.year[-1] + 5, np.nanmean(y.values[-30:]), exp, fontsize=12, ha='right', color = col) # not working for some evil reason
@@ -1676,6 +1727,8 @@ def plot_var_profile(clim_all, domain, vname, vcoord='deptht', exps = None, ref_
     if colors is None:
         colors = get_colors(exps)
     
+    ens_mean = ts_dataset.sel(exp=list(exps))[vname].mean(dim='exp').mean(dim='year')
+
     for exp, col in zip(exps, colors):
         y = ts_dataset.sel(exp = exp)[vname]
     
@@ -1685,9 +1738,8 @@ def plot_var_profile(clim_all, domain, vname, vcoord='deptht', exps = None, ref_
         else:
             levels = ts_dataset.sel(exp = exp)[vname][vcoord]
 
-        if ref_exp is not None: y = (y - y_ref) #/y_ref
-
-        ax.plot(y.mean(axis=0), -levels, label=exp, color=col)
+        y_anom = y.mean(axis=0) - ens_mean
+        ax.plot(y_anom, -levels, label=exp, color=col)
         # ax.text(y.year[-1] + 5, np.nanmean(y.values[-30:]), exp, fontsize=12, ha='right', color = col) # not working for some evil reason
     
     ax.set_title('')
@@ -1754,6 +1806,9 @@ def plot_zonal_profile(clim_all, domain, vname, vcoord='deptht', exps = None, re
     if colors is None:
         colors = get_colors(exps)
     
+    clevels = [0, 1e-7, 2.5e-7, 5e-7, 7.5e-7, 1e-6, 2.5e-6, 5e-6, 7.5e-6, 1e-5, 2.5e-5, 5e-5, 7.5e-5, 1e-4, 2.5e-4, 5e-4, 7.5e-4, 1e-3]
+    divnorm = mcolors.BoundaryNorm(clevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
+ 
     for exp, ax in zip(exps, axs.flatten()):
 
         if exp != ref_exp:
@@ -1771,18 +1826,23 @@ def plot_zonal_profile(clim_all, domain, vname, vcoord='deptht', exps = None, re
 
             # llevels = np.arange(-1,1.1,0.1)
             # norm = mcolors.BoundaryNorm(llevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
+            #d = ax.contourf(lats, -levels/1000, z, levels=clevels, cmap=cmo.cm.dense, extend='both',norm=divnorm)
             d = ax.contourf(lats, -levels/1000, z, levels=llevels, cmap=cmap, extend='both',norm=norm)
             #ax.set_ylabel('Depth (m)')
+            ax.set_xlim(30, 60)
+            ax.set_ylim(-1,0)
             ax.set_title(exp)
 
             cb2 = plt.colorbar(d, ax=ax, extend='both')
             # cb2.set_ticks([0, 1e-7,1e-6,1e-5, 1e-4, 1e-3])
             # cb2.set_ticklabels(['0','1e-7','1e-6','1e-5','1e-4','1e-3'], fontsize=12)
             # cb2.ax.set_ylabel(r'$N^2$ $(s^{-2}$)', fontsize=12)
-
+    
     clevels = [0, 1e-7, 2.5e-7, 5e-7, 7.5e-7, 1e-6, 2.5e-6, 5e-6, 7.5e-6, 1e-5, 2.5e-5, 5e-5, 7.5e-5, 1e-4, 2.5e-4, 5e-4, 7.5e-4, 1e-3]
     divnorm = mcolors.BoundaryNorm(clevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
     c = axs[0,0].contourf(lats, -levels, z_ref, cmap=cmo.cm.dense, levels=clevels, norm=divnorm)
+    axs[0,0].set_xlim(30,60)
+    axs[0,0].set_ylim(-1000,0)
     cb = plt.colorbar(c, ax=axs[0,0], extend='both')
     cb.set_ticks([0, 1e-7,1e-6,1e-5, 1e-4, 1e-3])
     cb.set_ticklabels(['0','1e-7','1e-6','1e-5','1e-4','1e-3'], fontsize=12)
@@ -2012,7 +2072,7 @@ def plot_pattern_map(exps, user = None, read_again = [], cart_exp = '/ec/res4/sc
     plt.show()
 
 
-def plot_anom_map(exps, user = None, bx=None, var = None, index=None,  map70 = None, label = None, domain=None, cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', ref_exp = None, atmvars = ''.split(), ocevars = ''.split(), icevars ='siconc'.split(),  year_clim = None, ax=None, density=False):
+def plot_anom_map(exps, user = None, bx=None, var = None, index=None, vlevel=None, map70 = None, label = None, domain=None, cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', ref_exp = None, atmvars = ''.split(), ocevars = ''.split(), icevars ='siconc'.split(),  year_clim = None, ax=None, density=False):
     
     """
     Plots 2d map of var "vname" in domain "domain" for all exps.
@@ -2027,11 +2087,17 @@ def plot_anom_map(exps, user = None, bx=None, var = None, index=None,  map70 = N
     ts_dataset = {co: ts_dataset[co] for co in ts_dataset if ts_dataset[co] is not None}
     ts_dataset = create_ds_exp(ts_dataset)
 
-    # update with trend!!
-    y = ts_dataset.sel(exp = exps[0])[var] - ts_dataset.sel(exp = ref_exp)[var].mean(axis=0)  #anomalies for each state
-    y_base = ts_dataset.sel(exp = '1pc0')[var] - ts_dataset.sel(exp = 'ctl0')[var].mean(axis=0)
+    # update with trend and potentially mean of all experiments!!
+    y = ts_dataset.sel(exp = exps[0])[var] - ts_dataset.sel(exp = ref_exp)[var].mean(dim='year')  #anomalies for each state
+    y_base = ts_dataset.sel(exp = '1pc0')[var] - ts_dataset.sel(exp = 'ctl0')[var].mean(dim='year') # one experiment reference anomalies
     
-    if domain == 'atm':
+    if(vlevel is not None):
+        k500 = int(np.abs(y.pressure_levels - vlevel*100).argmin())
+        y = y.isel(pressure_levels=k500)
+        y_base = y_base.isel(pressure_levels=k500)
+        ts_dataset = ts_dataset.isel(pressure_levels=k500)
+
+    if domain == 'atm' or domain == 'atm3d':
         lats = ts_dataset.lat
         lons = ts_dataset.lon
     else:
@@ -2041,11 +2107,14 @@ def plot_anom_map(exps, user = None, bx=None, var = None, index=None,  map70 = N
     #preindustrial state
 
     #clevels_pi = np.arange(0,1.1,0.1) # for sea-ice plot
-    clevels_pi = np.arange(-5,40,5) # for sst
+    #clevels_pi = np.arange(-5,40,5) # for sst
+    #clevels_pi = np.arange(-30,33,3) # for qt_oce
+    #clevels_pi = np.arange(0,110,10) # for clouds
+    clevels_pi = np.arange(-0.1,0.12,0.02) #for omega
 
-    cmap = cmo.cm.thermal
+    cmap = 'PuOr' #cmo.cm.thermal
     divnorm = mcolors.BoundaryNorm(clevels_pi, plt.colormaps['RdBu_r'].N, clip=True)
-    c = ax[0].pcolormesh(lons, lats, ts_dataset.sel(exp = ref_exp)[var].mean(axis=0)-273.15, cmap=cmap, transform=ccrs.PlateCarree(), norm=divnorm)
+    c = ax[0].pcolormesh(lons, lats, ts_dataset.sel(exp = ref_exp)[var].mean(dim='year'), cmap=cmap, transform=ccrs.PlateCarree(), norm=divnorm)
     gl = ax[0].gridlines(draw_labels={"bottom": "x", "left": "y"}, color='gray', alpha=0.5)
     gl.xlabel_style = {'size': 10}
     gl.ylabel_style = {'size':10}    
@@ -2057,14 +2126,16 @@ def plot_anom_map(exps, user = None, bx=None, var = None, index=None,  map70 = N
 
     periods = [1850+55, 1850+85] #[(1850+55, 1850+85), (1910, 1930), (1990, 2000)]
 
-    # tas
-    clevels = [np.arange(0, 5.5, 0.5), np.arange(-2, 2.5, 0.5)]
-    blevels = [clevels_pi, clevels_pi] #,np.arange(0, 6.5, 0.5),np.arange(0, 13, 1)]
-    #sea-ice
-    #clevels = [clevels_pi, np.arange(-10,11,1)]
-    #blevels = [np.arange(0,1.1, 0.1), np.arange(0,1.1, 0.1)]
+    
+    #clevels = [np.arange(0, 5.5, 0.5), np.arange(-1, 1.2, 0.2)] # tas
+    #clevels = [clevels_pi, np.arange(-10,11,1)] #sea-ice    
+    #clevels = [np.arange(-10,11,1), np.arange(-10,11,1)] # qt_oce
+    #clevels = [np.arange(0,22,2), np.arange(-10,11,1)] # clouds
+    clevels = [clevels_pi, np.arange(-0.01,0.02,0.001)] # omega
+
 
     if(exps[0] == exps[2]):
+            # plot same as middle column but with a different color scale
             diff = y.sel(year=slice(periods[0], periods[1])).mean(axis=0)
             divnorm = mcolors.BoundaryNorm(clevels[1], plt.colormaps['Reds'].N, clip=True)
             
@@ -2081,7 +2152,7 @@ def plot_anom_map(exps, user = None, bx=None, var = None, index=None,  map70 = N
     #for sea-ice
     #maps = [ts_dataset.sel(exp = exps[0])[var].sel(year=slice(periods[0], periods[1])).mean(axis=0), y.sel(year=slice(periods[0], periods[1])).mean(axis=0)]
     # for tas
-    maps = [ y.sel(year=slice(periods[0], periods[1])).mean(axis=0), diff]
+    maps = [y.sel(year=slice(periods[0], periods[1])).mean(axis=0), diff]
     
     # areas = get_areas_nemo(exps[0], 'itcv', cart_exp = cart_exp)
     # mask = get_mask_nemo(exps[0], 'itcv', cart_exp = cart_exp, grid = 'T')
@@ -2099,7 +2170,8 @@ def plot_anom_map(exps, user = None, bx=None, var = None, index=None,  map70 = N
     # print(np.round((np.nansum(seaice_north*area_north)),3))
 
     norms = [divnorm_70, divnorm]
-    cmaps = ['Reds', 'RdBu_r'] # both rdbu for sea-ice
+    cmaps = ['PuOr', 'RdBu_r'] # both rdbu for sea-ice
+    #cmaps = ['Reds', 'RdBu_r'] # for tas
 
     for k, (map, norm, cmap) in enumerate(zip(maps, norms, cmaps)):
             k+=1
@@ -2219,89 +2291,196 @@ def plot_cre_zonal_map(clim_all, exps=None, ref_exp=None, cart_out=cart_out):
 
     return fig
 
-def plot_zonal_ohue_correlation(clim_all, domain, vname, vcoord='deptht', exps = None, ref_exp = None, norm_factor = 1., cart_out = cart_out, colors=None):
-    """
-    Plots vertical profile of var "vname" in domain "domain" for all exps.
-    Domain is one among: ['atm', 'oce', 'ice']
-    """
-    decades = np.arange(-6, -3)   # 1e-8 → 1e-4
+def plot_zonal_ohue_correlation(clim_all, domain, vname, vcoord='deptht', exps=None, ref_exp=None, 
+                                 norm_factor=1., cart_out=cart_out, colors=None, user='itcv', cart_exp=cart_exp):
 
-    # 1–5 spacing per decade
-    pos_levels = np.sort(np.concatenate([1e0 * 10.0**decades,5e0 * 10.0**decades]))
+    decades = np.arange(-6, -3)
+    pos_levels = np.sort(np.concatenate([1e0 * 10.0**decades, 5e0 * 10.0**decades]))
     pos_levels = pos_levels[pos_levels <= 1e-4]
-
     neg_levels = -pos_levels[::-1]
-    neg_levels = neg_levels[neg_levels >=-1e-4]
+    neg_levels = neg_levels[neg_levels >= -1e-4]
+    llevels = np.concatenate((neg_levels, [-5e-7, -1e-7], [0.0], [1e-7, 5e-7], pos_levels))
 
-    #llevels = np.concatenate((neg_levels, [-5e-9,-1e-9],[0.0],[1e-9,5e-9,], pos_levels))
-    llevels = np.concatenate((neg_levels,[ -5e-7,-1e-7 ],[0.0],[1e-7,5e-7],  pos_levels))
-
-    # Keep only within desired max
-    N = 18 #22
-    center_bin = 8 #10 
-
+    N = 18
+    center_bin = 8
     neg_colors = plt.cm.RdBu_r(np.linspace(0, 0.5, center_bin, endpoint=False))
     pos_colors = plt.cm.RdBu_r(np.linspace(0.5, 1, N - center_bin, endpoint=True))
-
     colors_combined = np.vstack([neg_colors, pos_colors])
     cmap = mcolors.ListedColormap(colors_combined)
     norm = mcolors.BoundaryNorm(llevels, ncolors=N, clip=True)
 
-    if domain not in ['oce', 'rho']:
-        raise ValueError('domain should be one among: oce, rho')
-    
     ts_dataset = clim_all[f'{domain}_clim']
     ts_dataset = {co: ts_dataset[co] for co in ts_dataset if ts_dataset[co] is not None}
-    
-    if exps is None: exps = ts_dataset.keys()
 
-    fig, axs = plt.subplots(1,1, figsize = (8,5)) 
+    if exps is None:
+        exps = list(ts_dataset.keys())
+
+    # 6 zonal panels + 1 map
+    fig, axs = plt.subplots(1, 5, figsize=(40, 5))
 
     ts_dataset = create_ds_exp(ts_dataset)
 
     if colors is None:
         colors = get_colors(exps)
-    
+
+    msftyz_pi = [17.27849, 14.215454, 14.449981, 21.983986, 18.237486, 17.063816, 16.100374]
+    ohue          = [0.84123329, 0.99007471, 1.0855393,  1.3471938,  1.19594174, 0.92113063, 0.90884158]
+    kappas_mid    = [0.53248087,  0.81526031,  0.8679567,   1.14585244,  0.98493591,  0.81599646,  0.75244926]
+    kappas_low    = [0.23564626,  0.11832069,  0.10946587, -0.03732737,  0.06626532,  0.07127016,  0.16060662]
+    kappas_shig   = [0.2079748,   0.16950222,  0.16747797,  0.13956098,  0.16785692,  0.14245734,  0.15527706]
+    kappas_nhig   = [-0.13486864, -0.1130085,  -0.05936124,  0.09910775, -0.0231164,  -0.10859332, -0.15949136]
+    SO = [7.25121883327118e-06, 8.58279376767964e-06, 9.002351728229175e-06,8.225757828213546e-06, 7.525153750327314e-06,7.061722540070528e-06,7.5884067622284505e-06]
+    n2_pi  = [9.9629, 9.8201, 9.8467, 9.1094, 9.3500, 9.6355, 9.6910]
+
+    kappas = [ohue, kappas_mid, kappas_low, kappas_shig, kappas_nhig]
+    labels = ['Ohue', 'Mid', 'Low', 'Shig', 'Nhig']
+
     n2_zonal = []
-    #ohue = [0.51541,0.47315, 0.56904, 0.60572, 0.78627, 0.68126, 0.54892]
-    #ohue = [0.51541,0.47315, 0.56904, 0.60572, 0.68126, 0.54892]
-    ohue = [0.84123329, 0.99007471, 1.0855393  , 1.19594174,0.92113063, 0.90884158]
+
+    # --- compute depth-integrated N2 per experiment for the 2D map ---
+    n2_integrated_list = []  # list of 2D arrays (y, x), one per exp
 
     for exp in exps:
+        y = ts_dataset.sel(exp=exp)[vname]
 
-            y = ts_dataset.sel(exp = exp)[vname]
+        if vcoord == 'depth_mid':
+            v_levels = ts_dataset.sel(exp=exp)['density']['deptht'].values
+            depth_mid = (v_levels[:-1] + v_levels[1:])/ 2 
+            dz_mid = np.diff(v_levels)                              
         
-            if (vcoord == 'depth_mid'):
-                v_levels = ts_dataset.sel(exp = exp)['density']['deptht']
-                levels = (v_levels[1:].values + v_levels[:-1].values)/2
-            else:
-                levels = ts_dataset.sel(exp = exp)[vname][vcoord]
-            
-            z, lats = zonal_mean_irregular_xarray(y, y.nav_lat)
-            n2_zonal.append(z)
-            # llevels = np.arange(-1,1.1,0.1)
-            # norm = mcolors.BoundaryNorm(llevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
-   
+        else:
+            levels = ts_dataset.sel(exp=exp)[vname][vcoord].values
+
+        # zonal mean for the section plots
+        z, lats = zonal_mean_irregular_xarray(y, y.nav_lat)
+        n2_zonal.append(z)
+
+        # depth-integrated N2 between 0 and 1500m using dz weights
+
+        v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = 'depth_mid')
+        lev_max = 500
+        lev_bounds = [0,lev_max]
+        l1 = np.where(v_levels>lev_bounds[0])[0][0]
+        l2 = np.where(v_levels>lev_bounds[1])[0][0]
+        thick_weights = (v_mask *dz_mid[:,np.newaxis, np.newaxis])
+        
+        total_depth = thick_weights[l1:l2].sum(axis=0)
+
+        n2_int = (ts_dataset[vname].sel(exp=exp)[l1:l2] * thick_weights.values[l1:l2]).sum(axis=0)# / total_depth.values
+
+        n2_integrated_list.append(n2_int)
+    
+    plt.figure()
+    plt.pcolormesh(total_depth)
+    plt.colorbar()
+    # --- section plots (first 5 panels) ---
     n2 = np.zeros(np.shape(n2_zonal[0]))
     n2_zonal = np.array(n2_zonal)
-
-    for i in range(np.shape(n2)[0]):
-        for j in range(np.shape(n2)[1]):
-           
-            n2[i,j] = stats.linregress(n2_zonal[:,i,j], ohue)[2]
-
-    #clevels = [0, 1e-7, 2.5e-7, 5e-7, 7.5e-7, 1e-6, 2.5e-6, 5e-6, 7.5e-6, 1e-5, 2.5e-5, 5e-5, 7.5e-5, 1e-4, 2.5e-4, 5e-4, 7.5e-4, 1e-3]
-    #divnorm = mcolors.BoundaryNorm(clevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
-    c = axs.contourf(lats, -levels, n2, cmap='RdBu_r') #, levels=clevels, norm=divnorm)
-    axs.set_ylim(-3500,0)
-    cb = plt.colorbar(c, ax=axs, extend='both')
-    #cb.set_ticks([0, 1e-7,1e-6,1e-5, 1e-4, 1e-3])
-    #cb.set_ticklabels(['0','1e-7','1e-6','1e-5','1e-4','1e-3'], fontsize=12)
-    #cb.ax.set_ylabel(r'$N^2$ $(s^{-2}$)', fontsize=12)
-    #axs.set_title(ref_exp)
-
-    #fig.savefig(cart_out + f'check_profile_{domain}_{vname}_{'-'.join([exp for exp in exps])}.pdf')
+    sig_mask = np.zeros(np.shape(n2_zonal[0]))  # 1 where NOT significant, 0 where significant
     
+    for k in range(5):
+        for i in range(np.shape(n2)[0]):
+            for j in range(np.shape(n2)[1]):
+
+                result = stats.linregress(n2_zonal[:, i, j], n2_pi)
+                n2[i, j] = result[2]
+                sig_mask[i, j] = 1 if result[3] > 0.05 else 0
+ 
+
+        slope_max = np.nanpercentile(np.abs(n2), 95)
+        norm_k = mcolors.TwoSlopeNorm(vmax=slope_max, vcenter=0, vmin=-slope_max)
+        clevels = np.linspace(-slope_max, slope_max, 21)
+        clevels = np.arange(-1,1.25,0.25)
+        # clevels = [0, 1e-7, 2.5e-7, 5e-7, 7.5e-7, 1e-6, 2.5e-6, 5e-6, 7.5e-6, 1e-5, 2.5e-5, 5e-5, 7.5e-5, 1e-4, 2.5e-4, 5e-4, 7.5e-4, 1e-3]
+        # divnorm = mcolors.BoundaryNorm(clevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
+        
+        c = axs[k].contourf(lats, -depth_mid, n2, levels=clevels, cmap='RdBu_r', norm=norm_k, extend='both')
+        axs[k].contourf(lats, -depth_mid, sig_mask, levels=[0.5, 1.5], 
+                    hatches=['////'], colors='none', alpha=0)
+        axs[k].set_ylim(-3500, 0)
+        cb = fig.colorbar(c, ax=axs[k], extend='both')
+        axs[k].set_xlabel('Latitude', fontsize=12)
+        axs[k].set_ylabel('Depth (m)', fontsize=12)
+        axs[k].set_title(labels[k], fontsize=12)
+
+    # --- 2D map: correlation between local N2_1500 and ohue (last panel) ---
+    n2_integrated_arr = np.array(n2_integrated_list)   # shape (n_exps, y, x)
+    ny, nx = n2_integrated_arr.shape[1], n2_integrated_arr.shape[2]
+    corr_map = np.full((ny, nx), np.nan)
+
+    for i in range(ny):
+        for j in range(nx):
+            col = n2_integrated_arr[:, i, j]
+            if np.isfinite(col).all() and col.std() > 0:
+                corr_map[i, j] = stats.linregress(col, ohue)[2]  # index 2 = r value
+                if(stats.linregress(col,ohue)[3]> 0.05):
+                    corr_map[i, j] = np.nan
+
+    # use nav_lat/nav_lon from the last exp for the map coordinates
+    nav_lat = ts_dataset.sel(exp=list(exps)[-1])[vname].nav_lat.values
+    nav_lon = ts_dataset.sel(exp=list(exps)[-1])[vname].nav_lon.values
+    
+    clevels = [0, 1e-7, 2.5e-7, 5e-7, 7.5e-7, 1e-6, 2.5e-6, 5e-6, 7.5e-6, 1e-5, 2.5e-5, 5e-5, 7.5e-5, 1e-4, 2.5e-4, 5e-4, 7.5e-4, 1e-3]
+    divnorm = mcolors.BoundaryNorm(clevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
+ 
+    fig4, dx = plt.subplots(1,3,figsize=(19, 5))
+    cm1 = dx[0].contourf(lats, -depth_mid, n2_zonal.mean(axis=0), cmap=cmo.cm.dense, norm=divnorm, levels=clevels, extend='both')
+    cb1 = fig4.colorbar(cm1, ax=dx[0], extend='both')
+    dx[0].set_title('N2 mean', fontsize=12)
+    dx[0].set_xlabel('Latitude', fontsize=12)
+    dx[0].set_ylabel('Depth (m)', fontsize=12)
+
+    cm = dx[1].contourf(lats, -depth_mid, n2_zonal.std(axis=0), cmap=cmo.cm.thermal, norm=divnorm, levels=clevels, extend='both')
+    cb = fig4.colorbar(cm, ax=dx[1], extend='both')
+    dx[1].set_title('N2 std', fontsize=12)
+    dx[1].set_xlabel('Latitude', fontsize=12)
+    dx[1].set_ylabel('Depth (m)', fontsize=12)
+
+    clevels = np.arange(0, 1.1, 0.1)
+    divnorm = mcolors.BoundaryNorm(clevels,ncolors=plt.colormaps['RdBu_r'].N,clip=True)
+ 
+    cm = dx[2].contourf(lats, -depth_mid, n2_zonal.std(axis=0)/n2_zonal.mean(axis=0), cmap=cmo.cm.thermal, norm=divnorm, levels=clevels, extend='both')
+    cb2 = fig4.colorbar(cm, ax=dx[2], extend='both')
+    dx[2].set_title('N2 range', fontsize=12)
+    dx[2].set_xlabel('Latitude', fontsize=12)
+    dx[2].set_ylabel('Depth (m)', fontsize=12)
+
+    for cb_ in [cb1, cb]:
+        cb_.set_ticks([0, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3])
+        cb_.set_ticklabels(['0', '1e-7', '1e-6', '1e-5', '1e-4', '1e-3'], fontsize=12)
+
+
+    plt.show()
+
+    fig2, bx = plt.subplots(figsize=(10, 5), subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)})
+    norm_map = mcolors.TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
+    cm = bx.pcolormesh(nav_lon, nav_lat, corr_map, cmap='RdBu_r', norm=norm_map, transform=ccrs.PlateCarree())
+    cb = fig2.colorbar(cm, ax=bx, extend='both', label='r (N² 0-' + str(lev_max) + 'm vs Ohue)')
+    bx.set_title('Corr N²[0-' + str(lev_max) + 'm] vs ohue', fontsize=12)
+    bx.set_xlabel('Longitude', fontsize=12)
+    bx.set_ylabel('Latitude', fontsize=12)
+    bx.coastlines()
+    plt.show()
+
+    fig3, cx = plt.subplots(1,2,figsize=(18, 5), subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)})
+    fig3.suptitle('N²[0-' + str(lev_max) + 'm] across exps', fontsize=14, y=0.9)
+    norm_map = mcolors.BoundaryNorm(np.arange(0,0.11,0.01), plt.colormaps['viridis'].N, clip=True)
+    cm = cx[0].pcolormesh(nav_lon, nav_lat, n2_integrated_arr.mean(axis=0), cmap='viridis', transform=ccrs.PlateCarree(), norm=norm_map)
+    fig3.colorbar(cm, ax=cx[0], extend='both',label=r's$^{-2}$', shrink=0.7)
+    cx[0].set_title('Mean', fontsize=12)
+    cx[0].set_xlabel('Longitude', fontsize=12)
+    cx[0].set_ylabel('Latitude', fontsize=12)
+    cx[0].coastlines()
+
+    norm_map = mcolors.BoundaryNorm(np.arange(0,1.1,0.1), plt.colormaps['viridis'].N, clip=True)
+    cm = cx[1].pcolormesh(nav_lon, nav_lat, n2_integrated_arr.std(axis=0)/n2_integrated_arr.mean(axis=0), cmap='viridis', transform=ccrs.PlateCarree(), norm=norm_map)
+    fig3.colorbar(cm, ax=cx[1], extend='both', label='%', shrink=0.7)
+    cx[1].set_title('Relative Spread', fontsize=12)
+    cx[1].set_xlabel('Longitude', fontsize=12)
+    cx[1].set_ylabel('Latitude', fontsize=12)
+    cx[1].coastlines()
+    plt.show()
+
     return fig
 
 def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
@@ -2558,7 +2737,8 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='n000', user=None,
             filz = glob.glob(f'{cart_exp.format(user)}/{exp}/output/oifs/{exp}_atm_cmip6_1m_*.nc')
             if not filz:
                 raise FileNotFoundError(f"NetCDF files not found for {exp}")
-            ds = xr.open_mfdataset(filz, use_cftime=True, chunks={})
+            time_coder = xr.coders.CFDatetimecoder(use_cftime=True)
+            ds = xr.open_mfdataset(filz, decode_times=time_coder, chunks={})
             ds = ds[['rsut', 'rlut', 'rsdt', 'tas']]
             if 'cell' in ds.dims:
                 print(f"Regridding {exp} with CDO on {target_grid}...")
@@ -3582,9 +3762,9 @@ def compute_lambda(exps, user = None, window = 30,read_again = [], cart_exp = '/
     feedback  = (deltaN-forcing).sel(year =slice(1850+55, 1850+85)).mean(axis=0)/deltaSST.sel(year =slice(1850+55, 1850+85)).mean(axis=0)
     feedback_ts  = (deltaN-forcing).rolling(year =window).mean(axis=0)/deltaSST.rolling(year =window).mean(axis=0)
     
-    return feedback_ts
+    #return feedback_ts
     #return feedback, (deltaN-forcing).sel(year =slice(1850+55, 1850+85)).mean(axis=0), deltaSST.sel(year =slice(1850+55, 1850+85)).mean(axis=0)
-    #return deltaN, deltaSST, forcing
+    return deltaN, deltaSST, forcing
 
 def compute_alpha_abrupt(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, rolling=40, density=False):
 
@@ -3611,7 +3791,7 @@ def compute_alpha_abrupt(exps, user = None, read_again = [], cart_exp = '/ec/res
     deltaN = (toa.sel(exp=exps[0])[:150] - trend_N*np.arange(0,150)-intercept_N)
     deltaSST = (tas.sel(exp=exps[0])[:150] - trend_SST*np.arange(0,150)-intercept_SST)
 
-    feedback  = stats.linregress(deltaSST.sel(year =slice(1850,1870)),(deltaN).sel(year =slice(1850,1870)))[0]
+    feedback  = stats.linregress(deltaSST.sel(year =slice(1870,2000)),(deltaN).sel(year =slice(1870,2000)))[0]
 
     return feedback, deltaN, deltaSST
 
@@ -4110,12 +4290,15 @@ def plot_lambdaKappa_mean(exps=None, ax=None, bx = None, cart_out = './output/',
     gl = ax[1,1].gridlines(draw_labels={"bottom": "x", "left": "y"}, color='gray', alpha=0.5)
     gl.xlabel_style = {'size': 10}
     gl.ylabel_style = {'size':10}    
-    ax[1,1].set_title('Mean L')
+    ax[1,1].set_title('Std L')
     ax[1,1].coastlines()
 
     cb2 = plt.colorbar(d, ax=ax[1,1], extend='both', shrink=0.7)
     cb2.ax.set_ylabel(r'(W/m2/K)', fontsize=12)
     
+    for axs in ax.flatten():
+        axs.set_extent([0, 360, -30, 30], crs=ccrs.PlateCarree())
+
     clevels2 = np.arange(-5,6,1)
     divnorm2 = mcolors.BoundaryNorm(clevels2, ncolors=plt.colormaps['RdBu_r'].N, clip=True)
     clevels = np.arange(-1,1.1,0.1)
@@ -4662,7 +4845,7 @@ def compute_base_anom_state(exps, user = None, read_again = [], ax=None, cart_ex
     if not os.path.exists(cart_out): os.mkdir(cart_out)
 
     cart_out_nc = cart_out + '/exps_clim/'
-    cart_out_figs = cart_out + f'/check_{'-'.join(exps)}/'
+    #cart_out_figs = cart_out + f'/check_{'-'.join(exps)}/'
 
     clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density)
 
@@ -4684,7 +4867,6 @@ def compute_base_anom_state(exps, user = None, read_again = [], ax=None, cart_ex
 
     ds_forcing = xr.open_mfdataset('/ec/res4/hpcperm/itcv/analysis/forcing_1pct/'+exps[0]+'_forcing.nc')
     forcing = ds_forcing.forcing
-
     forcing_g = global_mean(forcing)
 
     amoc_dataset = clim_all['amoc_ts']
@@ -4710,20 +4892,31 @@ def compute_base_anom_state(exps, user = None, read_again = [], ax=None, cart_ex
         x = x.rolling(year=rolling).mean()[:150]
 
         print(var.name)
-        print('Pi:', var_ref.mean(axis=0).values)
+        print('Pi:', var_ref.mean(axis=0).values, var_ref.std(axis=0).values)
         print('Year 70:', x[85].values)
         print('Year 150:', x[-1].values)
 
     var3d = [N2]
 
     for var in var3d:
-        var_ref = var.sel(exp=ref_exp)
 
-        var_mean = global_mean_oce_3d(rho_dataset,ref_exp, 'itcv', 'Nsquared', depth_mean=True)['Nsquared']
+        var_mean = global_mean_oce_3d(rho_dataset.sel(exp=ref_exp),ref_exp, 'itcv', 'Nsquared', depth_mean=True)['Nsquared']
+        N2_deep = global_mean_oce_3d_region(rho_dataset.sel(exp=ref_exp), ref_exp, 'itcv', 'Nsquared', depth_mean=True, lats=[-90,90], lev_bounds=[0,500])['Nsquared']
+
+        depths = []
+        # for i in range(int(2500/50)):
+        #     depths.append(global_mean_oce_3d_region(rho_dataset.sel(exp=ref_exp), ref_exp, 'itcv', 'Nsquared', depth_mean=True, lats=[-57,-47], lev_bounds=[0,i*50])['Nsquared'])
+
+        var_so = global_mean_oce_3d_region(rho_dataset.sel(exp=ref_exp), ref_exp, 'itcv', 'Nsquared', depth_mean=True, lats=[-57,-47], lev_bounds=[450,950])['Nsquared']
+
         print(var.name)
-        print('Pi:', var_mean)
-
-
+        print('Pi deep:', N2_deep.values)
+        #print('Pi SO  50m:', var_so_50.values)
+    
+    print('Forcing at year 70:', forcing_g.rolling(year=rolling).mean()[85].values)
+    
+    return depths
+    
     # compute internal variability in forced run
     # trend_30, intercept30,_,_,_ = stats.linregress(np.arange(0,30), z.sel(year=slice(1970,1999)))
     # z_int = z[120:] - (trend_30*np.arange(0,180)+intercept30)
@@ -4732,6 +4925,374 @@ def compute_base_anom_state(exps, user = None, read_again = [], ax=None, cart_ex
 
     #fig.savefig(cart_out + f'check_ts_anom_{'-'.join([exp for exp in exps])}.pdf')
     
+def return_var(exps, user = None, vname = None, domain=None, lat_bounds = [-90,90], lon_bounds = [0,360], read_again = [], ax=None, cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', atm_only = False, atmvars = 'rsut rlut rsdt tas'.split(), ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, density=False):
+    """
+    Plots timeseries of var "vname" in domain "domain" for all exps.
+
+    Domain is one among: ['atm', 'oce', 'ice']
+    """
+    if cart_out is None:
+        raise ValueError('cart_out not specified!')
+    
+    if not os.path.exists(cart_out): os.mkdir(cart_out)
+
+    cart_out_nc = cart_out + '/exps_clim/'
+    #cart_out_figs = cart_out + f'/check_{'-'.join(exps)}/'
+    
+    map_all = read_output_map(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, year_clim = year_clim, density=density)
+
+    dataset = map_all[f'{domain}_map']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+
+    dataset = create_ds_exp(dataset)
+    var = dataset[vname]
+
+    if domain == 'oce':
+
+        lats = var.nav_lat
+        lons = var.nav_lon
+        areas = get_areas_nemo(exps[0], 'itcv', cart_exp = cart_exp)
+        mask = get_mask_nemo(exps[0], 'itcv', cart_exp = cart_exp, grid = 'T')
+        nx, ny = np.shape(areas)
+        areas_ds = var.sel(exp=exps[0])[0].copy()
+        areas_ds.values = areas*mask
+    
+    elif domain == 'atm' or domain =='atm3d':
+        
+        lats = var.lat
+        lons = var.lon
+        nx = len(lats)
+        ny = len(lons)
+        weights = np.cos(np.deg2rad(lats))
+        tot_weights = weights.sum()*lons.size
+        areas_ds = weights
+
+    trend = np.zeros([nx,ny])
+    intercept = np.zeros([nx,ny])
+
+    for i in range(nx):
+        for j in range(ny):
+
+            trend[i,j], intercept[i,j], _, _, _ = stats.linregress(np.arange(0,np.shape(var.sel(exp=exps[1]))[0]), var.sel(exp=exps[1])[:,i,j])
+
+    delta = (var.sel(exp=exps[0]) - (np.arange(0,300))[:, np.newaxis, np.newaxis]*trend-intercept).rolling(year=30).mean()
+    #delta = (var.sel(exp=exps[0]) - (np.arange(0,300))[:, np.newaxis, np.newaxis]*trend).rolling(year=30).mean()
+
+    area_reg = areas_ds.where(((lats < lat_bounds[1]) & (lats > lat_bounds[0])), np.nan)
+    if(lon_bounds[0] < lon_bounds[1]):
+        area_box = area_reg.where(((lons < lon_bounds[1]) & (lons > lon_bounds[0])), np.nan)
+    else:
+        area_box = area_reg.where(((lons < lon_bounds[1]) | (lons > lon_bounds[0])), np.nan)
+    
+    # fig,ax = plt.subplots(1,1,subplot_kw={'projection': ccrs.PlateCarree()})
+    # d = ax.pcolormesh(lons, lats, area_box, transform=ccrs.PlateCarree())
+    # ax.coastlines()
+    # plt.show()
+    if vname =='omega':
+        clima = var.sel(exp=exps[1]).mean(dim='year')
+        omega_up = delta.where(clima<-0.01, np.nan)*area_box
+
+        fig,ax = plt.subplots(1,1,subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)})
+        d = ax.pcolormesh(lons, lats, omega_up[85], transform=ccrs.PlateCarree())
+        ax.coastlines()
+        plt.show()
+
+        var_box = (omega_up).sum(axis=(1,2))/area_box.sum()
+
+    else:
+        if domain == 'oce':
+            var_box = (delta*area_box).sum(axis=(1,2))/np.nansum(area_box)
+        else :
+            var_box = (delta*area_box).sum(axis=(1,2))/area_box.sum()
+
+    var_box_70 = var_box[85]
+
+    return var_box_70.values
+
+
+def return_max_500hpa(exps, user=None, vname=None, domain=None,read_again=[], cart_exp='/ec/res4/scratch/{}/ece4/',
+                     cart_out='./output/', atm_only=False, atmvars=''.split(),ocevars=''.split(),year_clim=None, density=False):
+
+    cart_out_nc = cart_out + '/exps_clim/'
+    
+    map_all = read_output_map(exps, user=user, read_again=read_again,cart_exp=cart_exp, cart_out=cart_out_nc,atm_only=atm_only, atmvars=atmvars,ocevars=ocevars, year_clim=year_clim,density=density)
+
+    dataset = map_all[f'{domain}_map']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+    dataset = create_ds_exp(dataset)
+
+    var = dataset[vname]
+
+    # --- ensure correct dimension order ---
+    var = var.transpose('exp', 'year', 'pressure_levels', 'lat')
+
+    lats = var.lat
+    plev = var.pressure_levels
+
+    nx = len(lats)
+    nz = len(plev)
+
+    # --- find closest level to 500 hPa ---
+    target_p = 50000.0  # Pa
+    k500 = int(np.abs(plev - target_p).argmin())
+
+    # --- compute trend (using control exp: exps[1]) ---
+    trend = np.zeros((nz, nx))
+    intercept = np.zeros((nz, nx))
+
+    control = var.sel(exp=exps[1])
+
+    for k in range(nz):
+        for i in range(nx):
+            ts = control[:, k, i]
+            trend[k, i], intercept[k, i], _, _, _ = stats.linregress(np.arange(len(ts)), ts)
+
+    # --- detrend experiment exps[0] ---
+    target = var.sel(exp=exps[0])
+    time = np.arange(target.sizes['year'])
+
+    trend_3d = trend[np.newaxis, :, :]
+    intercept_3d = intercept[np.newaxis, :, :]
+
+    delta = (target) # - (time[:, None, None] * trend_3d + intercept_3d))
+
+    # --- 30-year running mean ---
+    delta = delta.rolling(year=30).mean()
+    picontrol = control.rolling(year=30).mean()
+    # --- select 500 hPa ---
+    delta_500 = delta[:, k500, :]   # (year, lat)
+    control_500 = picontrol[:, k500, :].mean(dim='year')  # mean over time for control
+    
+    # --- compute max over latitude ---
+    var_max = np.full(delta_500.shape[0], np.nan)
+    lat_max = np.full(delta_500.shape[0], np.nan)
+    var_min = np.full(delta_500.shape[0], np.nan)
+    lat_min = np.full(delta_500.shape[0], np.nan)
+
+    var_width = np.full(delta_500.shape[0], np.nan)
+    var_width_s = np.full(delta_500.shape[0], np.nan)
+
+    for t in range(delta_500.shape[0]):
+        slice_t = delta_500[t,:].sel(lat=slice(-30,30))
+
+        if np.all(np.isnan(slice_t)):
+            continue  # leave NaN
+
+        idx = np.nanargmax(slice_t)
+        idx2 = np.nanargmin(slice_t)
+        var_max[t] = slice_t[idx]
+        lat_max[t] = lats.sel(lat=slice(-30,30)).values[idx]
+
+        var_min[t] = slice_t[idx2]
+        lat_min[t] = lats.sel(lat=slice(-30,30)).values[idx2]
+
+        slice_north = delta_500[t,:].sel(lat=slice(lat_max[t],60))
+        cs = scipy.interpolate.CubicSpline(lats.sel(lat=slice(lat_max[t],60)), slice_north)
+        xs = np.arange(lat_max[t],60, 0.1)
+        slice_interp = cs(xs)
+
+        var_width[t] = lats.sel(lat=slice(lat_max[t],60)).values[slice_north<0][0]
+        var_width_s[t] = xs[slice_interp<0][0]
+
+    max_control = control_500.sel(lat=slice(-30,30)).max(dim='lat')
+    lat_control = control_500.sel(lat=slice(-30,30)).lat[control_500.sel(lat=slice(-30,30)).argmax(dim='lat')]
+    min_control = control_500.sel(lat=slice(-30,30)).min(dim='lat')
+    lat_control_min = control_500.sel(lat=slice(-30,30)).lat[control_500.sel(lat=slice(-30,30)).argmin(dim='lat')]
+
+    width_control = lats.sel(lat=slice(lat_control,60)).values[control_500.sel(lat=slice(lat_control,60))<0][0]
+
+    cs = scipy.interpolate.CubicSpline(lats.sel(lat=slice(lat_control,60)), control_500.sel(lat=slice(lat_control,60)))
+    xs = np.arange(lat_control,60, 0.1)
+    slice_interp = cs(xs)
+    var_width_sc = xs[slice_interp<0][0]
+
+    var_max_70 = var_max[85]
+    lat_max_70 = lat_max[85]
+    var_min_70 = var_min[85]   
+    lat_min_70 = lat_min[85]
+    var_width_70 = var_width[85]
+
+    return var_width_70 , width_control, var_width_s[85], var_width_sc
+    #return var_max_70, lat_max_70, max_control.values, lat_control.values, var_min_70, lat_min_70, min_control.values, lat_control_min.values
+
+def extract_variables_at_level(input_file, output_file, variables, level, level_dim='pressure_levels', level_units='Pa'):
+    """
+    Extract variables at a specific pressure level and save to a new netCDF file.
+
+    Parameters
+    ----------
+    input_file  : str  - path to input netCDF file
+    output_file : str  - path to output netCDF file
+    variables   : list - variable names to extract, e.g. ['omega', 'ua']
+    level       : float - level value to extract, e.g. 50000 (Pa) or 500 (hPa)
+    level_dim   : str  - name of the vertical dimension in the file
+    level_units : str  - just for metadata, 'Pa' or 'hPa'
+    """
+    ds = xr.open_dataset(input_file)
+
+    extracted = {}
+    for var in variables:
+        if var not in ds:
+            raise KeyError(f"Variable '{var}' not found in {input_file}. Available: {list(ds.data_vars)}")
+        extracted[var] = ds[var].sel({level_dim: level}, method='nearest')
+
+    ds_out = xr.Dataset(extracted)
+    ds_out.attrs = ds.attrs  # carry over global attributes
+    ds_out.attrs['extracted_level'] = f"{level} {level_units}"
+
+    ds_out.to_netcdf(output_file)
+    print(f"Saved {variables} at {level} {level_units} → {output_file}")
+
+    return ds_out
+
+def compute_atm_streamfunction(exps, user = None, cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', atm_only = False, atmvars = 'rsut rlut rsdt tas'.split(), ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, density=False):
+
+    cart_out_nc = cart_out + '/exps_clim/'
+    
+    map_all = read_output_map(exps, user = user, read_again = [], cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, year_clim = year_clim, density=density)
+
+    dataset = map_all[f'atm3d_map']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+
+    dataset = create_ds_exp(dataset)
+    var = dataset['va']
+    var_u = dataset['ua']
+
+
+    #streamfunction computation
+    var_zonal = var.sel(exp=exps[0]).mean(dim='lon')
+    v = var_zonal.transpose('year','lat', 'pressure_levels')
+    
+    plev = v.pressure_levels
+
+    a = 6378000 #m
+    g = 9.81  #m/s2
+
+    dp = xr.DataArray(np.gradient(plev),dims=["pressure_levels"],coords={"pressure_levels": plev})
+
+    v_int = (v * dp).cumsum(dim='pressure_levels')
+    coslat = np.cos(np.deg2rad(v.lat))
+    psi = (2 * np.pi * a / g) * coslat * v_int
+    psi.name = "psi"
+    psi.attrs["long_name"] = "Atmospheric mass streamfunction"
+    psi.attrs["units"] = "kg s-1"
+
+    # ── Omega (vertical pressure velocity) ───────────────────────────────────
+    # Select experiment and get full 3D (lat, lon, lev) fields
+    ua = var_u.sel(exp=exps[0])   # (year, lat, lon, pressure_levels)
+    va = var.sel(exp=exps[0])     # (year, lat, lon, pressure_levels)
+
+    # Spherical geometry: convert lat/lon to radians
+    lat_rad = np.deg2rad(ua.lat)   # (lat,)
+    lon_rad = np.deg2rad(ua.lon)   # (lon,)
+
+    # Grid spacings in radians
+    dlat = xr.DataArray(np.gradient(lat_rad), dims=['lat'], coords={'lat': ua.lat})
+    dlon = xr.DataArray(np.gradient(lon_rad), dims=['lon'], coords={'lon': ua.lon})
+
+    # Spherical divergence: (1/a*cos(lat)) * (du/dlon + d(v*cos(lat))/dlat)
+    coslat_2d = np.cos(lat_rad)   # broadcast over lon automatically
+
+    du_dlon = ua.differentiate('lon') / dlon / (a * coslat_2d)
+    vcoslat  = va * coslat_2d
+    dvcoslat_dlat = vcoslat.differentiate('lat') / dlat / (a * coslat_2d)
+    div = du_dlon + dvcoslat_dlat   # (year, lat, lon, pressure_levels)
+
+    # Integrate downward from TOA: omega(p) = -integral_0^p div dp'
+    # Pressure levels must be ordered top→bottom (ascending pressure values)
+    plev_vals = ua.pressure_levels.values
+    if plev_vals[0] > plev_vals[-1]:
+        # levels are bottom→top: flip, integrate, flip back
+        div = div.isel(pressure_levels=slice(None, None, -1))
+
+    dp_3d = xr.DataArray(
+        np.gradient(div.pressure_levels.values),
+        dims=['pressure_levels'],
+        coords={'pressure_levels': div.pressure_levels}
+    )
+    omega = -(div * dp_3d).cumsum(dim='pressure_levels')
+
+    # Flip back if we reversed earlier
+    if plev_vals[0] > plev_vals[-1]:
+        omega = omega.isel(pressure_levels=slice(None, None, -1))
+        omega = omega.assign_coords(pressure_levels=ua.pressure_levels)
+
+    omega.name = "omega"
+    omega.attrs["long_name"] = "Vertical pressure velocity"
+    omega.attrs["units"] = "Pa s-1"
+
+    atm3d = xr.open_mfdataset(cart_out_nc + f'map_atm3d_tuning_{exps[0]}.nc') 
+    atm3d['psi'] = psi
+    atm3d['omega'] = omega
+    atm3d.to_netcdf(cart_out_nc + f'map_atm3d_tuning_{exps[0]}_analysis.nc')
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+    # Left: streamfunction (zonal mean, pressure vs lat)
+    ax = axes[0]
+    cf = ax.contourf(v.lat, plev / 100, psi.mean(dim='year').T, levels=20, cmap='RdBu_r')
+    ax.invert_yaxis()
+    plt.colorbar(cf, ax=ax, label="kg s$^{-1}$")
+    ax.set_xlabel("Latitude")
+    ax.set_ylabel("Pressure (hPa)")
+    ax.set_title("Mean Streamfunction")
+
+    # Right: omega at 500 hPa (lat-lon map)
+    ax = axes[1]
+    omega_500 = omega.mean(dim='year').sel(pressure_levels=50000, method='nearest')  # Pa → nearest 500 hPa
+    cf2 = ax.contourf(omega.lon, omega.lat, omega_500, levels=20, cmap='RdBu_r', vcenter=0, vmax=0.1)
+    plt.colorbar(cf2, ax=ax, label="Pa s$^{-1}$")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_title("$\\omega$ at 500 hPa (mean)")
+
+    plt.tight_layout()
+    plt.show()
+
+def compute_trend(vars, exps, dataset):
+    
+    for var in vars:
+        for exp in exps:
+            var_pi = dataset[var].sel(exp=exp)
+            mask = ~np.isnan(var_pi)
+            print(f'-------- {exp} --------')
+        
+            # test full length trend
+            trend = stats.linregress(np.arange(0,np.shape(var_pi[mask])[0]), var_pi[mask])[0]
+            print(f'{var} trend for {exp}: {trend}')
+            print(f'{var} change in {np.shape(var_pi[mask])[0]} years: {trend*np.shape(var_pi[mask])[0]}\n')
+
+            # test 500 years trend
+            trend = stats.linregress(np.arange(0,499), var_pi[mask][:499])[0]
+            print(f'{var} trend for {exp} for first 500 ys: {trend}')
+            print(f'{var} change in 500 years: {trend*500}\n')
+
+            # test 300 years trend
+            trend = stats.linregress(np.arange(0,300), var_pi[mask][-300:])[0]
+            print(f'{var} trend for {exp} for last 300 ys: {trend}')
+            print(f'{var} change in 300 years: {trend*300}\n')
+
+            # test trend in 300 ys before 500
+            trend = stats.linregress(np.arange(0,299), var_pi[mask][200:499])[0]
+            print(f'{var} trend for {exp} for 200-500 ys: {trend}')
+            print(f'{var} change in 300 years: {trend*300}\n')
+
+def check_pi_state(clim_all, exps):
+    """
+    Compute trends for some variables to check experiment evolution.
+    """
+    vars = ['tas']
+    dataset = clim_all[f'atm_mean']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+    dataset = create_ds_exp(dataset)
+    compute_trend(vars, exps, dataset)
+
+    vars = ['tos', 'heatc']
+    dataset = clim_all[f'oce_mean']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+    dataset = create_ds_exp(dataset)
+    compute_trend(vars, exps, dataset)
+
 
 def compute_cre(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', density=False):
     """
@@ -4770,7 +5331,7 @@ def compute_cre(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch
 # ============================================================
 ################################################ MAIN FUNCTION ###########################
 
-def compare_multi_exps_map(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = ''.split(), ocevars = ''.split(), icevars = 'siconc'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', density=False, density_only=False,colors=None):
+def compare_multi_exps_map(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas cll clm clh'.split(), atmvars3d = 'ta ua va'.split(), ocevars = ''.split(), icevars = 'siconc'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', density=False, density_only=False,colors=None):
     """
     Runs all multi-exps diagnostics.
 
@@ -4788,7 +5349,7 @@ def compare_multi_exps_map(exps, user = None, read_again = [], cart_exp = '/ec/r
     cart_out_figs = cart_out + f'/check_{'-'.join(exps)}/'
 
     ### read outputs for all exps
-    clim_all = read_output_map(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density, density_only=density_only)
+    clim_all = read_output_map(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, atmvars3d = atmvars3d, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density, density_only=density_only)
 
     fig_siconc_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-0.5,0.6,0.1))
 
@@ -4821,19 +5382,19 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
 
+    #check_pi_state(clim_all, exps)
     allfigs = []
     ### Gregory and amoc gregory
-    #fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, colors=colors)
+    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, colors=colors)
     # allfigs += [fig_greg]
 
-    # if coupled:
-    #      fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, colors=colors)
+    if coupled:
+         fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, colors=colors)
     #     allfigs.append(fig_amoc_greg)
 
     #     # fig_amoc_all = plot_amoc_2d_all(clim_all['amoc_mean'], exps, cart_out = cart_out_figs)
     #     # allfigs.append(fig_amoc_all)
-
-    #fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=1, colors=colors)
+    fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=1, colors=colors)
 
     # # Atm fluxes and zonal tas
     # figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs, colors=colors)
@@ -4845,8 +5406,8 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     # if coupled:
     #     fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs, colors=colors)
     #     allfigs.append(fig_tas)
-    rolling=1
-    #fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+    rolling=20
+    fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
     #fig_tas_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
     #fig_toa_map  = plot_toa_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
 
@@ -4856,11 +5417,11 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     ##### CAN ADD NEW DIAGS HERE
     if coupled:
         rolling =  20
-        fig_n2 = plot_var_ts_3d(clim_all, 'rho', 'Nsquared', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        #fig_n2 = plot_var_ts_3d(clim_all, 'rho', 'Nsquared', cart_out = cart_out_figs, rolling=rolling, colors=colors)
 
         #fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        #fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        # fig_heatc = plot_var_ts(clim_all, 'oce', 'heatc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        fig_heatc = plot_var_ts(clim_all, 'oce', 'heatc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
         # fig_qtoce = plot_var_ts(clim_all, 'oce', 'qt_oce', cart_out = cart_out_figs, rolling=rolling, colors=colors)
         # fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
         # fig_siv =plot_var_ts(clim_all, 'ice', 'sivolu_N', cart_out = cart_out_figs, rolling=rolling, colors=colors)
@@ -4872,7 +5433,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             #fig_rho = plot_var_ts_3d(clim_all, 'rho', 'density', cart_out = cart_out_figs, rolling=rolling)
             #fig_den = plot_var_profile(clim_all, 'rho', 'density',  cart_out = cart_out_figs, colors=colors)
             #fig_n2 = plot_var_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
-            fig_n2so = plot_var_region(clim_all, 'rho', 'Nsquared',[30,60],ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors,cart_exp = cart_exp)
+            #fig_n2so = plot_var_region(clim_all, 'rho', 'Nsquared',[-60,-30],ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors,cart_exp = cart_exp)
             #fig_n2zonal  = plot_zonal_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
             #fig_siconc_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-0.5,0.6,0.1))
             #fig_tos_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-1,1.1,0.1))

@@ -583,6 +583,8 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     iceclim_exp   = dict()
     icemean_exp   = dict()
 
+    coupled_exps = []
+
     # ═════════════════════════════════════════════════════════════════════════
     for exp, us in zip(exps, user):
         print(f'\n{"="*60}\n{exp}')
@@ -599,6 +601,8 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                       not os.path.exists(cart_out + f'clim_tuning_{exp}.nc'))
         if ocean_only:
             print(f'No atm files found for {exp}. Assuming ocean-only')
+
+        coupled_exps.append(True if coupled else False)
 
         # ── file paths ────────────────────────────────────────────────────────
 
@@ -741,7 +745,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     clim_all = dict()
     clim_all['atm_clim']  = atmclim_exp
     clim_all['atm_mean']  = atmmean_exp
-    if coupled:
+    if np.any(coupled_exps):
         clim_all['oce_clim']  = oceclim_exp
         clim_all['oce_mean']  = ocemean_exp
         clim_all['ice_clim']  = iceclim_exp

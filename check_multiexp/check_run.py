@@ -525,14 +525,18 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             return xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 240})
         except OSError as err:
             print(err)
-            print('Run still ongoing, removing last year')
-            new_filz = file_list(exp, us, cart_exp=cart_exp,
-                                 remove_last_year=True, coupled=coupled)
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = new_filz
-            key = {'atm': filz_exp, 'nemo': filz_nemo,
-                   'amoc': filz_amoc, 'ice': filz_ice}[suffix]
-            return xr.open_mfdataset(key[exp], use_cftime=True,
-                                     chunks={'time_counter': 240})
+            if err.errno == -101:
+                print('Run still ongoing, removing last year')
+                new_filz = file_list(exp, us, cart_exp=cart_exp,
+                                    remove_last_year=True, coupled=coupled)
+                filz_exp_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
+                key = {'atm': filz_exp_new, 'oce': filz_nemo_new,
+                    'amoc': filz_amoc_new, 'ice': filz_ice_new}[suffix]
+                print(key[exp])
+                return xr.open_mfdataset(key[exp], use_cftime=True,
+                                        chunks={'time_counter': 240})
+            else:
+                raise err
 
     def _normalise_amoc_ts(ds):
         if 'time_counter' in ds.dims:
@@ -587,7 +591,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         # try:
         #     ds = xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 240})
         # except OSError as err:
-        ds = _open_mfdataset_safe(filz, exp, us, True if domain in ['oce','ice'] else False, suffix=domain)
+        ds = _open_mfdataset_safe(filz, exp, us, True if domain in ['oce','ice'] else False, suffix=domain) # THIS changes the file list!
 
         ds_new = ds.sel(time_counter=slice(f'{last_year + 1}0101', None))
         if len(ds_new.time_counter) == 0:

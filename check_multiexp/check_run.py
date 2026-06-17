@@ -7,9 +7,9 @@ from matplotlib import pyplot as plt
 import numpy as np
 import os
 import pandas as pd
-import xmca
-from xmca.array import MCA  # numpy
-from xmca.xarray import xMCA  # numpy
+# import xmca
+# from xmca.array import MCA  # numpy
+# from xmca.xarray import xMCA  # numpy
 
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
@@ -17,13 +17,13 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 import matplotlib.colors as mcolors 
 import glob
-import cmocean as cmo
+# import cmocean as cmo
 from scipy import stats
 import cartopy.crs as ccrs
 import matplotlib.gridspec as gridspec # GRIDSPEC !
 import scipy
-import statsmodels.api as sm
-from statsmodels.regression.rolling import RollingOLS
+# import statsmodels.api as sm
+# from statsmodels.regression.rolling import RollingOLS
 #import xesmf as xe
 
 import yaml
@@ -35,6 +35,8 @@ from pathlib import Path
 datadir = '../data/'
 cart_out = './output/'
 cart_exp = '/ec/res4/scratch/{}/ece4/'
+
+time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
 
 ######################################################################################
 
@@ -544,7 +546,7 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
         cart = f'{cart_exp.format(user)}/{exp}/output/oifs_remap/'
     else:
         cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
-    filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
+    filz_atm = cart + f'{exp}_atm_cmip6_1m_*.nc'
     filz_atm3d = cart + f'{exp}_atm_cmip6_pl_*.nc'
 
     cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
@@ -556,9 +558,9 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
 
     if remove_last_year:
         # Still running, remove last year
-        fils = glob.glob(filz_exp)
+        fils = glob.glob(filz_atm)
         fils.sort()
-        filz_exp = fils[:-1]
+        filz_atm = fils[:-1]
 
         fils = glob.glob(filz_atm3d)
         fils.sort()
@@ -583,10 +585,10 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
         
     if density:
         filz_rho = '../density/density_fields/' + f'{exp}/{exp}_*_density.nc'
-        return filz_exp, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho
+        return filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho
 
     else:
-        return filz_exp, filz_atm3d, filz_nemo, filz_amoc, filz_ice
+        return filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice
 
 def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas rlnt rlntcs rsnt rsntcs'.split(), atmvars3d='ta ua va wap cl'.split(), ocevars = 'tos qt_oce'.split(), icevars='siconc'.split(), atm_only = False, year_clim = None, density=False, density_only=False, flag_omega = False):
     """
@@ -605,13 +607,13 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
         if len(user) != len(exps):
             raise ValueError(f"Length not corresponding: exps {len(exps)}, user {len(user)}")
 
-    filz_exp = dict()
+    filz_atm = dict()
     filz_atm3d = dict()
     filz_nemo = dict()
     filz_ice = dict()
 
     for exp, us in zip(exps, user):
-            filz_exp[exp], filz_atm3d[exp], filz_nemo[exp], _, filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
+        filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], _, filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
         
     atmmap_exp = dict()
     atmmap3d_exp = dict()
@@ -638,7 +640,7 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
                 ocemap_exp[exp] = existing_oce           
             else:
                 print(f'Computing missing OCE vars: {missing_vars}')
-                #time_coder = xr.coders.CFDatetimecoder(use_cftime=True)
+                
                 ds = xr.open_mfdataset(filz_nemo[exp],chunks={'time_counter': 240})
 
                 new_atm = compute_oce_map(ds,exp,user=user, cart_out=cart_out,ocevars=missing_vars,year_clim=year_clim)
@@ -661,9 +663,8 @@ def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, car
                 
         else:
             print('Computing clim...')
-            time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
 
-            ds = xr.open_mfdataset(filz_exp[exp], decode_times=time_coder, chunks = {'time_counter': 240})
+            ds = xr.open_mfdataset(filz_atm[exp], decode_times=time_coder, chunks = {'time_counter': 240})
             # ATM CLIM
             atmmap_exp[exp] = compute_atm_map(ds, exp, cart_out = cart_out, atmvars = atmvars, year_clim = year_clim)
 
@@ -718,27 +719,26 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     if file_lists is not None:
         if density:
-            filz_exp, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho = file_lists
+            filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho = file_lists
         else:
-            filz_exp, filz_atm3d, filz_nemo, filz_amoc, filz_ice = file_lists
+            filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice = file_lists
     else:
-        filz_exp  = dict()
+        filz_atm  = dict()
         filz_atm3d = dict()
         filz_amoc = dict()
         filz_rho = dict()
         filz_nemo = dict()
         filz_ice  = dict()
         for exp, us in zip(exps, user):
-            if density:
-                filz_exp[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
-            else:
-                filz_exp[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
-                
             remove_last_year = False
             if exp in ongoing:
                 remove_last_year = True
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = remove_last_year)
 
+            if density:
+                filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
+            else:
+                filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = remove_last_year)
+                
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _files_exist(pattern_or_list):
@@ -771,18 +771,17 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _open_mfdataset_safe(filz, exp, us, coupled, suffix='atm'):
         try:
-            return xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 240})
+            return xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240})
         except OSError as err:
             print(err)
             if err.errno == -101:
                 print('Run still ongoing, removing last year')
                 new_filz = file_list(exp, us, cart_exp=cart_exp,
                                     remove_last_year=True, coupled=coupled)
-                filz_exp_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
-                key = {'atm': filz_exp_new, 'oce': filz_nemo_new,
+                filz_atm_new, filz_atm3d_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
+                filz_new = {'atm': filz_atm_new, 'oce': filz_nemo_new,
                     'amoc': filz_amoc_new, 'ice': filz_ice_new}[suffix]
-                print(key[exp])
-                return xr.open_mfdataset(key[exp], use_cftime=True,
+                return xr.open_mfdataset(filz_new, decode_times=time_coder,
                                         chunks={'time_counter': 240})
             else:
                 raise err
@@ -797,21 +796,21 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     # ── per-domain compute (full dataset) ─────────────────────────────────────
 
     def _compute_atm(exp, us, coupled, vars=atmvars, save=True):
-        ds = _open_mfdataset_safe(filz_exp[exp], exp, us, coupled, suffix='atm')
+        ds = _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm')
         return compute_atm_clim(ds, exp,
                                 cart_out=cart_out if save else None,
                                 atmvars=vars, year_clim=year_clim)
 
     def _compute_oce(exp, us, vars=ocevars, save=True):
         print(filz_nemo[exp])
-        ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True,
+        ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder,
                                chunks={'time_counter': 240})
         return compute_oce_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 ocevars=vars, year_clim=year_clim)
 
     def _compute_ice(exp, us, vars=icevars, save=True):
-        ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True,
+        ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder,
                                chunks={'time_counter': 240})
         return compute_ice_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
@@ -819,7 +818,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _compute_amoc(exp, save=True):
         try:
-            ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True,
+            ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
                                    chunks={'time_counter': 240})
             return compute_amoc_clim(ds, exp,
                                      cart_out=cart_out if save else None,
@@ -838,7 +837,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         print(f'[{domain}] Last year in saved data: {last_year}')
 
         # try:
-        #     ds = xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 240})
+        #     ds = xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240})
         # except OSError as err:
         ds = _open_mfdataset_safe(filz, exp, us, True if domain in ['oce','ice'] else False, suffix=domain) # THIS changes the file list!
 
@@ -855,7 +854,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _update_amoc(exp, amoc_ts_old, amoc_mean_old):
         last_year = int(amoc_ts_old.year[-1].values)
-        # ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True,
+        # ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
         #                        chunks={'time_counter': 240})
         ds = _open_mfdataset_safe(filz_amoc[exp], exp, us, True, suffix='amoc')
 
@@ -922,7 +921,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                        _files_exist(filz_nemo[exp]))
             print('coupled' if coupled else f'No ocean files found for {exp}. Assuming atm-only')
 
-        ocean_only = (not _files_exist(filz_exp[exp]) and
+        ocean_only = (not _files_exist(filz_atm[exp]) and
                       not os.path.exists(cart_out + f'clim_tuning_{exp}.nc'))
         if ocean_only:
             print(f'No atm files found for {exp}. Assuming ocean-only')
@@ -967,7 +966,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'atm', atm_clim_path, atm_mean_path,
                     missing=atm_missing,
                     compute_fn_missing=lambda vars: compute_atm_clim(
-                        _open_mfdataset_safe(filz_exp[exp], exp, us, coupled, suffix='atm'),
+                        _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm'),
                         exp, cart_out=None, atmvars=vars, year_clim=year_clim))
 
             elif atm_action == 'update':
@@ -976,7 +975,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 mean_old = xr.load_dataset(atm_mean_path)
                 atmclim_exp[exp], atmmean_exp[exp] = _update_domain(
                     exp, us, 'atm', clim_old, mean_old,
-                    filz=filz_exp[exp],
+                    filz=filz_atm[exp],
                     compute_fn=lambda ds: compute_atm_clim(
                         ds, exp, cart_out=None, atmvars=atmvars, year_clim=year_clim),
                     clim_path=atm_clim_path, mean_path=atm_mean_path)
@@ -1001,7 +1000,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'oce', oce_clim_path, oce_mean_path,
                     missing=oce_missing,
                     compute_fn_missing=lambda vars: compute_oce_clim(
-                        xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks={'time_counter': 240}),
+                        xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks={'time_counter': 240}),
                         exp, us, cart_exp=cart_exp, cart_out=None,
                         ocevars=vars, year_clim=year_clim))
 
@@ -1032,7 +1031,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'ice', ice_clim_path, ice_mean_path,
                     missing=ice_missing,
                     compute_fn_missing=lambda vars: compute_ice_clim(
-                        xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks={'time_counter': 240}),
+                        xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks={'time_counter': 240}),
                         exp, us, cart_exp=cart_exp, cart_out=None,
                         icevars=vars, year_clim=year_clim))
 
@@ -1715,7 +1714,7 @@ def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out):
     return fig
 
 
-def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out):
+def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out, colors = None):
     """
     Plots timeseries of var "vname" in domain "domain" for all exps.
 
@@ -2040,7 +2039,7 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
             filz = glob.glob(f'{cart_exp.format(user)}/{exp}/output/oifs/{exp}_atm_cmip6_1m_*.nc')
             if not filz:
                 raise FileNotFoundError(f"NetCDF files not found for {exp}")
-            time_coder = xr.coders.CFDatetimecoder(use_cftime=True)
+
             ds = xr.open_mfdataset(filz, decode_times=time_coder, chunks={})
             ds = ds[['rsut', 'rlut', 'rsdt', 'tas']]
             if 'cell' in ds.dims:
@@ -2773,7 +2772,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors)
             allfigs.append(fig_amoc_greg)
 
-            fig_amoc_all = plot_amoc_2d_all(clim_all['amoc_mean'], exps, cart_out = cart_out_figs, colors=colors)
+            fig_amoc_all = plot_amoc_2d_all(clim_all['amoc_mean'], exps, cart_out = cart_out_figs)
             allfigs.append(fig_amoc_all)
 
             fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=rolling, colors=colors)

@@ -944,7 +944,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         amoc_2d_path  = cart_out + f'amoc_2d_tuning_{exp}{yclim_tag}.nc'
         amoc_ts_path  = cart_out + f'amoc_ts_tuning_{exp}.nc'
         rho_clim_path  = cart_out + f'clim_rho_tuning_{exp}{yclim_tag}.nc'
-        rho_mean_path  = cart_out + f'clim_mean_tuning_{exp}.nc'
+        rho_mean_path  = cart_out + f'mean_rho_tuning_{exp}.nc'
 
         # ── per-domain actions ────────────────────────────────────────────────
         atm_action,  atm_missing  = _needs_compute(atm_clim_path, atm_mean_path, atmvars) if not ocean_only else (False, None)
@@ -952,8 +952,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         ice_action,  ice_missing  = _needs_compute(ice_clim_path, ice_mean_path, icevars) if coupled        else (False, None)
         amoc_action, _            = _needs_compute(amoc_2d_path,  amoc_ts_path)           if coupled        else (False, None)
         if density:
-            rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)           if coupled        else (False, None)
-
+            rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)       if coupled        else (False, None)
         # ── ATM ───────────────────────────────────────────────────────────────
         if not ocean_only:
             if not atm_action:

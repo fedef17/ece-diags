@@ -1,15 +1,30 @@
+from curses import window
+from math import exp
+from os import path
+
 import xarray as xr
 from matplotlib import pyplot as plt
 import numpy as np
 import os
 import pandas as pd
+# import xmca
+# from xmca.array import MCA  # numpy
+# from xmca.xarray import xMCA  # numpy
 
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-
+import matplotlib.colors as mcolors 
 import glob
+# import cmocean as cmo
+from scipy import stats
+import cartopy.crs as ccrs
+import matplotlib.gridspec as gridspec # GRIDSPEC !
+import scipy
+# import statsmodels.api as sm
+# from statsmodels.regression.rolling import RollingOLS
+#import xesmf as xe
 
 import yaml
 import argparse
@@ -20,6 +35,8 @@ from pathlib import Path
 datadir = '../data/'
 cart_out = './output/'
 cart_exp = '/ec/res4/scratch/{}/ece4/'
+
+time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
 
 ######################################################################################
 
@@ -48,7 +65,6 @@ def get_spectral_colors(n):
         colors = [cmap(0)]
 
     return colors
-
 
 def add_diahsb_init_to_restart(rest_file, rest_file_new = None):
     """
@@ -138,9 +154,16 @@ def global_mean(ds, compute = True):
         weights = np.cos(np.deg2rad(all_lats))
 
     if 'time' in ds.coords:
-        ds_mean = ds.groupby('time.year').mean().groupby('lat').mean().weighted(weights).mean('lat')
+        if 'cell' in ds.dims:
+            ds_mean = ds.groupby('time.year').mean().groupby('lat').mean().weighted(weights).mean('lat')
+        else:
+            ds_mean = (ds.groupby('time.year').mean().groupby('lat').mean().weighted(weights).mean('lat')).mean('lon')
     else:
-        ds_mean = ds.groupby('lat').mean().weighted(weights).mean('lat')
+        if 'cell' in ds.dims:
+            ds_mean = ds.groupby('lat').mean().weighted(weights).mean('lat')
+        else:
+            ds_mean = (ds.groupby('lat').mean().weighted(weights).mean('lat')).mean('lon')
+
     
     # ds_mean = ds_mean['rsut rlut rsdt tas'.split()]
     if 'rlut' in ds_mean:
@@ -150,7 +173,6 @@ def global_mean(ds, compute = True):
         ds_mean = ds_mean.compute()
 
     return ds_mean
-
 
 def global_mean_oce_2d(ds, exp, user, cart_exp = cart_exp, compute = True, grid = 'T'):
     """
@@ -171,70 +193,134 @@ def global_mean_oce_2d(ds, exp, user, cart_exp = cart_exp, compute = True, grid 
     year_sec = 24*60*60*365.25
     gh_flux = get_ghflux(exp, user, cart_exp = cart_exp)
 
-    heat_trend = ds_time_mean['heatc'].diff('year')/year_sec/tot_area
-    ds_time_mean['enebal'] = heat_trend - ds_time_mean.qt_oce - gh_flux # source of energy in the ocean
+    # heat_trend = ds_time_mean['heatc'].diff('year')/year_sec/tot_area
+    # ds_time_mean['enebal'] = heat_trend - ds_time_mean.qt_oce - gh_flux # source of energy in the ocean
 
     if compute:
         return ds_time_mean.compute()
     else:
         return ds_time_mean
 
+def get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = 'deptht', year='1850'):
+    #ocean areas
 
-# def get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = 'deptht'):
-#     #ocean areas
+    if(v_grid == 'deptht'):
+        fileoce = xr.load_dataset(cart_exp.format(user) + f'/{exp}/output/nemo/' + f'{exp}_oce_1m_T_{year}-{year}.nc')
+        thetao = fileoce.thetao[0]
+        vmask = thetao/thetao
+    else:
+        fileoce = xr.load_dataset('../density/density_fields/' + f'{exp}/{exp}_{year}_density.nc')
+        #fileoce = fileoce.rename({f'x_grid_T': 'x', f'y_grid_T': 'y'})
+        density = fileoce.Nsquared[0]
+        vmask = density/density
 
-#     if(v_grid == 'deptht'):
-#         fileoce = xr.load_dataset(cart_exp.format(user) + f'/{exp}/output/nemo/' + f'{exp}_oce_1m_T_1850-1850.nc')
-#         thetao = fileoce.thetao[0]
-#         vmask = thetao/thetao
-#     else:
-#         fileoce = xr.load_dataset('../density/density_fields/' + f'{exp}/{exp}_1850_density.nc')
-#         #fileoce = fileoce.rename({f'x_grid_T': 'x', f'y_grid_T': 'y'})
-#         density = fileoce.Nsquared[0]
-#         vmask = density/density
+    return vmask
 
-#     return vmask
-
-
-# def global_mean_oce_3d(ds, exp, user, vars, cart_exp = cart_exp, compute = True, grid = 'T', singlelevel = False, lev = 0):
+def global_mean_oce_3d(ds, exp, user, vars, cart_exp = cart_exp, compute = True, depth_mean=False,grid = 'T', singlelevel = False, lev = 0, year='1850'):
     
-#     area = get_areas_nemo(exp, user, cart_exp = cart_exp, grid = grid)
+    area = get_areas_nemo(exp, user, cart_exp = cart_exp, grid = grid)
     
-#     #ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'}) # for 4.1.0
-    
-#     ds_time_mean = ds[vars].copy()
+    #ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'}) # for 4.1.0
 
-#     if(singlelevel):
-#         for var in ds.data_vars:
-#             if var in vars:
-#                 if(var == 'Nsquared'):
-#                     v_grid = 'depth_mid'
-#                 else:
-#                     v_grid = 'deptht'
-#                 v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid)
-#                 v_area = (v_mask*area).sum(axis=(1,2))
+    ds_time_mean = ds[vars].copy()
+
+    if(singlelevel):
+        print('Global mean for one vertical level only, lev = ', lev)
+        for var in ds.data_vars:
+            if var in vars:
+                if(var == 'Nsquared'):
+                    v_grid = 'depth_mid'
+                else:
+                    v_grid = 'deptht'
+                v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid, year = year)
+                v_area = (v_mask*area).sum(axis=(1,2))
+                ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute().isel(depth_mid=lev, drop=True)
+                ds_time_mean[var] = ds_time_mean[var]/v_area[lev].values   
+    else:
+        print('Global mean for all vertical levels')
+        for var in ds.data_vars:
+            if var in vars:
+                if(var == 'Nsquared'):
+                    v_grid = 'depth_mid'
+                else:
+                    v_grid = 'deptht'
+                v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid, year = year)
+
+                if depth_mean:
+                    # get layer thicknesses as weights
+                    # I think I miss half of the deepest vertical levels
+                    v_levels = ds['density']['deptht']
+
+                    #mid_points = (v_levels[1:].values + v_levels[:-1].values)/2
+                    dz_mid = np.diff(v_levels)
+                    thick_weights = (dz_mid[:,np.newaxis, np.newaxis] * area * v_mask)   # total weighted thickness per level
+                    total_depth = thick_weights.sum() # total ocean volume
+                    ds_time_mean[var] = (ds[var] * thick_weights.values).sum() / total_depth.values
                 
-#                 ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute()
-#                 ds_time_mean[var] = ds_time_mean[var]/v_area[lev].values                
-#     else:
-#         for var in ds.data_vars:
-#             if var in vars:
-#                 if(var == 'Nsquared'):
-#                     v_grid = 'depth_mid'
-#                 else:
-#                     v_grid = 'deptht'
-#                 v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid)
-#                 v_area = (v_mask*area).sum(axis=(1,2))
-#                 ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute()
-#                 ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
- 
-#     return ds_time_mean
-
-def global_mean_oce_3d(ds, exp, user, cart_exp = cart_exp, compute = True, grid = 'T'):
-
-    ## Account for variable area at depth
-    return
+                else:
+                    #test without thickness weights, just mask and area
+                    v_area = (v_mask*area).sum(axis=(1,2))                
+                    ds_time_mean[var] = (ds[var]*area*v_mask).sum(['x', 'y']).compute()
+                    ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
+        
+    return ds_time_mean
     
+def global_mean_oce_3d_region(ds, exp, user, vars, cart_exp = cart_exp, lats=None, lev_bounds=None, compute = True, grid = 'T', singlelevel = False, lev = 0, depth_mean= False, year='1850'):
+    
+    area = get_areas_nemo(exp, user, cart_exp = cart_exp, grid = grid)
+    ds_time_mean = ds[vars].copy()
+
+    if(singlelevel):
+        for var in ds.data_vars:
+            if var in vars:
+                if(var == 'Nsquared'):
+                    v_grid = 'depth_mid'
+                else:
+                    v_grid = 'deptht'
+                
+                mask_reg = (ds[var].nav_lat>lats[0]) & (ds[var].nav_lat<lats[1])
+                area_reg = (area*mask_reg).sel(x=slice(lats[0], lats[1]))
+                v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid, year = ds.year.values[0])
+                v_mask = v_mask.sel(x=slice(lats[0], lats[1]))
+                v_area = (v_mask*area_reg).sum(axis=(1,2))
+                ds_time_mean[var] = (ds[var].sel(x=slice(lats[0],lats[1]))*area_reg*v_mask).sum(['x', 'y']).compute()
+                ds_time_mean[var] = ds_time_mean[var]/v_area[lev].values                
+    else:
+        for var in ds.data_vars:
+            if var in vars:
+                if(var == 'Nsquared'):
+                    v_grid = 'depth_mid'
+                else:
+                    v_grid = 'deptht'
+                mask_reg = (ds[var].nav_lat>lats[0]) & (ds[var].nav_lat<lats[1])
+                area_reg = (area*mask_reg) #.sel(x=slice(lats[0], lats[1]))
+                v_mask = get_vmask_nemo(exp, user, cart_exp = cart_exp, v_grid = v_grid, year = year )
+
+                v_mask = v_mask.where(mask_reg) #sel(x=slice(lats[0], lats[1]))
+
+                if depth_mean:
+                    v_levels = ds['density']['deptht']          
+                    levels = (v_levels[:-1] + v_levels[1:])/ 2 # this line is not working, is summing the same values with each other!!!
+
+                    dz_mid = np.diff(v_levels)   # shape (n_lev-1,), thickness between cell centers                                  # shape (n_lev,) same as v_levels
+        
+                    levels = (v_levels[1:].values + v_levels[:-1].values)/2
+
+                    l1 = np.where(levels>lev_bounds[0])[0][0]
+                    l2 = np.where(levels>lev_bounds[1])[0][0]
+                    #print(levels[l1], levels[l2])
+                    thick_weights = (area_reg * v_mask *dz_mid).transpose('depth_mid', 'y', 'x')[l1:l2]
+
+                    total_depth = thick_weights.sum()
+                    ds_time_mean[var] = (ds[var].where(mask_reg)[l1:l2] * thick_weights.values).sum() / total_depth.values
+                
+                else:
+
+                    v_area = (v_mask*area_reg).sum(axis=(1,2))
+                    ds_time_mean[var] = (ds[var].where(mask_reg) *area_reg*v_mask).sum(['x', 'y']).compute()
+                    ds_time_mean[var] = (ds_time_mean[var]/v_area.values).compute()
+
+    return ds_time_mean
 
 def global_mean_ice(ds, exp, user, cart_exp = cart_exp, compute = True, grid = 'T'):
     area = get_areas_nemo(exp, user, cart_exp = cart_exp, grid = grid)
@@ -249,8 +335,8 @@ def global_mean_ice(ds, exp, user, cart_exp = cart_exp, compute = True, grid = '
         
     if 'sithic' in ds.data_vars:
         var = 'sithic'
-        ds_time_mean[var + '_N'] = ds_time_mean[var + '_N']/ds_time_mean['siconc_N']
-        ds_time_mean[var + '_S'] = ds_time_mean[var + '_S']/ds_time_mean['siconc_S']
+        ds_time_mean[var + '_N'] = ds_time_mean[var + '_N']*ds_time_mean['siconc_N']
+        ds_time_mean[var + '_S'] = ds_time_mean[var + '_S']*ds_time_mean['siconc_S']
 
     ds_time_mean = ds_time_mean[[var for var in ds_time_mean.data_vars if '_N' in var or '_S' in var]]
 
@@ -259,7 +345,6 @@ def global_mean_ice(ds, exp, user, cart_exp = cart_exp, compute = True, grid = '
     else:
         return ds_time_mean
     
-
 def compute_atm_clim(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None):
     ds = ds.rename({'time_counter': 'time'})
     ds = ds[atmvars].groupby('time.year').mean().compute()
@@ -280,6 +365,56 @@ def compute_atm_clim(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas
 
     return atmclim, atmmean
 
+def compute_atm_map(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr rsnt rsntcs rlnt rlntcs'.split(), year_clim = None):
+    print('Computing atmospheric map climatology')
+    ds = ds.rename({'time_counter': 'time'})
+    ds = ds[atmvars].groupby('time.year').mean().compute()
+
+    if cart_out is not None:
+        ds.to_netcdf(cart_out + f'map_tuning_{exp}.nc')
+
+    return ds
+
+def compute_atm3d_map(ds, exp, cart_out = cart_out, atmvars = 'wap'.split(), year_clim = None):
+    print('Computing 3D atmospheric map climatology')
+    ds = ds.rename({'time_counter': 'time'})
+    ds = ds[atmvars].groupby('time.year').mean().compute()
+
+    if cart_out is not None:
+        ds.to_netcdf(cart_out + f'map_atm3d_tuning_{exp}.nc')
+
+    return ds
+
+def compute_oce_map(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, grid = 'T'):
+    print('Computing ocean map climatology')
+    ds = ds.rename({'time_counter': 'time'})
+    # print(ds.data_vars)
+    ds = ds[ocevars].groupby('time.year').mean()
+    
+    if f'x_grid_{grid}_inner' in ds.dims:
+        ds = ds.rename({f'x_grid_{grid}_inner': 'x', f'y_grid_{grid}_inner': 'y'})
+    if f'x_grid_{grid}' in ds.dims:
+        ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'})
+
+    if cart_out is not None:
+        ds.to_netcdf(cart_out + f'map_oce_tuning_{exp}.nc')
+
+    return ds
+
+def compute_ice_map(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, icevars = 'siconc'.split(), year_clim = None, grid = 'T'):
+    
+    print('Computing ice map climatology')
+    ds = ds.rename({'time_counter': 'time'})
+    # print(ds.data_vars)
+    ds = ds[icevars].groupby('time.year').mean()
+    
+    if f'x_grid_{grid}_inner' in ds.dims:
+        ds = ds.rename({f'x_grid_{grid}_inner': 'x', f'y_grid_{grid}_inner': 'y'})
+    if f'x_grid_{grid}' in ds.dims:
+        ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'})
+
+    if cart_out is not None:
+        ds.to_netcdf(cart_out + f'map_ice_tuning_{exp}.nc')
 
 def compute_oce_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, grid = 'T'):
     ds = ds.rename({'time_counter': 'time'})
@@ -307,7 +442,6 @@ def compute_oce_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, oc
 
     return oceclim, ocemean
 
-
 def compute_ice_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, icevars = 'sithic sivolu siconc'.split(), year_clim = None):
     ds = ds.rename({'time_counter': 'time'})
     ds = ds[icevars].groupby('time.year').mean()
@@ -328,7 +462,6 @@ def compute_ice_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ic
         icemean.to_netcdf(cart_out + f'mean_ice_tuning_{exp}.nc')
 
     return iceclim, icemean
-
 
 def compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = None):
     amoc_ts = calc_amoc_ts(ds, plot = False)
@@ -360,25 +493,25 @@ def compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = None):
 
     return amoc_mean, amoc_ts
 
-# def compute_rho_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'density Nsquared'.split(), year_clim = None, grid = 'T'):
-#     #ds = ds.rename({'time_counter': 'time'})
-#     # print(ds.data_vars)
-#     #ds = ds[ocevars].groupby('time.year').mean() # controllare se estendibile a medie mensili!! 
-#     #ds = ds.rename({f'x_grid_{grid}_inner': 'x', f'y_grid_{grid}_inner': 'y'})
-#     #ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'})
+def compute_rho_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'density Nsquared'.split(), year_clim = None, grid = 'T'):
+    #ds = ds.rename({'time_counter': 'time'})
+    # print(ds.data_vars)
+    #ds = ds[ocevars].groupby('time.year').mean() # controllare se estendibile a medie mensili!! 
+    #ds = ds.rename({f'x_grid_{grid}_inner': 'x', f'y_grid_{grid}_inner': 'y'})
+    #ds = ds.rename({f'x_grid_{grid}': 'x', f'y_grid_{grid}': 'y'})
 
-#     if year_clim is None:
-#         print('Using last 20 years for climatology')
-#         oceclim = ds.isel(year = slice(-20, None)).mean('year').compute()
-#     else:
-#         oceclim = ds.sel(year = slice(year_clim[0], year_clim[1])).mean('year').compute()
+    if year_clim is None:
+        print('Using last 20 years for climatology')
+        oceclim = ds.isel(year = slice(-20, None)).mean('year').compute()
+    else:
+        oceclim = ds.sel(year = slice(year_clim[0], year_clim[1])).mean('year').compute()
 
-#     oceclim.to_netcdf(cart_out + f'clim_rho_tuning_{exp}.nc')
+    oceclim.to_netcdf(cart_out + f'clim_rho_tuning_{exp}.nc')
 
-#     ocemean = global_mean_oce_3d(ds, exp, user, 'density Nsquared'.split(), cart_exp, compute = True)
-#     ocemean.to_netcdf(cart_out + f'mean_rho_tuning_{exp}.nc')
+    ocemean = global_mean_oce_3d(ds, exp, user, 'density Nsquared'.split(), cart_exp, compute = True)
+    ocemean.to_netcdf(cart_out + f'mean_rho_tuning_{exp}.nc')
 
-#     return oceclim, ocemean 
+    return oceclim, ocemean 
 
 def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max = 2000., lat_min = 25, lat_max = 28, ylim = (5, 20), plot = False, basin = 2):
 
@@ -406,12 +539,15 @@ def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max 
 
     return amoc_max
 
-
 ##################################### READ OUTPUTS ################################
 
-def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True):
-    cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
-    filz_exp = cart + f'{exp}_atm_cmip6_1m_*.nc'
+def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True, density= False, atm_remapped = False):
+    if atm_remapped:
+        cart = f'{cart_exp.format(user)}/{exp}/output/oifs_remap/'
+    else:
+        cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
+    filz_atm = cart + f'{exp}_atm_cmip6_1m_*.nc'
+    filz_atm3d = cart + f'{exp}_atm_cmip6_pl_*.nc'
 
     cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
     filz_amoc = cart + f'{exp}_oce_1m_diaptr3d_*.nc'
@@ -420,21 +556,15 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
 
     # ftv3_oce_1m_diaptr2d_1991-1991.nc -> hf_basin
 
-    # if year_range is not None:
-    #     years = np.arange(year_range[0], year_range[1]+1, 1)
-    #     cart = f'{cart_exp.format(user)}/{exp}/output/oifs/'
-    #     filz_exp = [cart + f'{exp}_atm_cmip6_1m_{ye}-{ye}.nc' for ye in years]
-
-    #     cart = f'{cart_exp.format(user)}/{exp}/output/nemo/'
-    #     filz_amoc = [cart + f'{exp}_oce_1m_diaptr3d_{ye}-{ye}.nc' for ye in years]
-    #     filz_nemo = [cart + f'{exp}_oce_1m_T_{ye}-{ye}.nc' for ye in years]
-    #     filz_ice = [cart + f'{exp}_ice_1m_{ye}-{ye}.nc' for ye in years]
-
     if remove_last_year:
         # Still running, remove last year
-        fils = glob.glob(filz_exp)
+        fils = glob.glob(filz_atm)
         fils.sort()
-        filz_exp = fils[:-1]
+        filz_atm = fils[:-1]
+
+        fils = glob.glob(filz_atm3d)
+        fils.sort()
+        filz_atm3d = fils[:-1]
 
         if coupled:
             fils = glob.glob(filz_nemo)
@@ -452,15 +582,15 @@ def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_yea
             filz_amoc = []
             filz_nemo = []
             filz_ice = []
+        
+    if density:
+        filz_rho = '../density/density_fields/' + f'{exp}/{exp}_*_density.nc'
+        return filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho
 
-    return filz_exp, filz_nemo, filz_amoc, filz_ice
+    else:
+        return filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice
 
-
-def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart_out,
-                atmvars='rsut rlut rsdt tas pr'.split(),
-                ocevars='tos heatc qt_oce sos'.split(),
-                icevars='siconc sivolu sithic'.split(),
-                atm_only=False, year_clim=None, file_lists=None, ongoing = []):
+def read_output_map(exps, user = None, read_again = [], cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas rlnt rlntcs rsnt rsntcs'.split(), atmvars3d='ta ua va wap cl'.split(), ocevars = 'tos qt_oce'.split(), icevars='siconc'.split(), atm_only = False, year_clim = None, density=False, density_only=False, flag_omega = False):
     """
     Reads outputs and computes global means.
 
@@ -472,24 +602,143 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     """
 
     if isinstance(user, str):
+        user = len(exps)*[user]
+    else:
+        if len(user) != len(exps):
+            raise ValueError(f"Length not corresponding: exps {len(exps)}, user {len(user)}")
+
+    filz_atm = dict()
+    filz_atm3d = dict()
+    filz_nemo = dict()
+    filz_ice = dict()
+
+    for exp, us in zip(exps, user):
+        filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], _, filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp)
+        
+    atmmap_exp = dict()
+    atmmap3d_exp = dict()
+    ocemap_exp = dict()
+    icemap_exp = dict()
+
+    if(atm_only):
+        coupled = False
+    else:
+        coupled = True
+
+    for exp, us in zip(exps, user):
+        print(exp)
+        if os.path.exists(cart_out + f'map_tuning_{exp}.nc') and exp not in read_again:
+            print('Already computed, reading clim..')
+            existing_atm = xr.load_dataset(cart_out + f'map_tuning_{exp}.nc')
+            atmmap_exp[exp] = existing_atm            
+
+            existing_oce = xr.load_dataset(cart_out + f'map_oce_tuning_{exp}.nc')
+            existing_vars = list(existing_oce.data_vars)
+            missing_vars = [v for v in ocevars if v not in existing_vars]
+            
+            if len(missing_vars) == 0:
+                ocemap_exp[exp] = existing_oce           
+            else:
+                print(f'Computing missing OCE vars: {missing_vars}')
+                
+                ds = xr.open_mfdataset(filz_nemo[exp],chunks={'time_counter': 240})
+
+                new_atm = compute_oce_map(ds,exp,user=user, cart_out=cart_out,ocevars=missing_vars,year_clim=year_clim)
+
+                # merge old + new
+                updated_atm = xr.merge([existing_oce, new_atm])
+                updated_atm.to_netcdf(cart_out + f'map_oce_tuning_{exp}.nc', mode='w')
+
+                ocemap_exp[exp] = updated_atm
+
+            if (flag_omega):
+                atmmap3d_exp[exp] = xr.load_dataset(cart_out + f'map_atm3d_tuning_{exp}_500hPa.nc')
+            else:
+                atmmap3d_exp[exp] = xr.load_dataset(cart_out + f'map_atm3d_tuning_{exp}.nc')
+
+            if coupled:
+                if os.path.exists(cart_out + f'map_oce_tuning_{exp}.nc'):
+                    ocemap_exp[exp] = xr.load_dataset(cart_out + f'map_oce_tuning_{exp}.nc')
+                    icemap_exp[exp] = xr.load_dataset(cart_out+f'map_ice_tuning_{exp}.nc')
+                
+        else:
+            print('Computing clim...')
+
+            ds = xr.open_mfdataset(filz_atm[exp], decode_times=time_coder, chunks = {'time_counter': 240})
+            # ATM CLIM
+            atmmap_exp[exp] = compute_atm_map(ds, exp, cart_out = cart_out, atmvars = atmvars, year_clim = year_clim)
+
+            ds.close()
+            ds = xr.open_mfdataset(filz_atm3d[exp], decode_times=time_coder, chunks = {'time_counter': 240})
+            atmmap3d_exp[exp] = compute_atm3d_map(ds, exp, cart_out = cart_out, atmvars = atmvars3d, year_clim = year_clim) 
+            ds.close()
+            
+
+            if coupled:
+                # OCE CLIM
+                ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks = {'time_counter': 240})
+                ocemap_exp[exp] = compute_oce_map(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, ocevars = ocevars, year_clim = year_clim)
+                ds.close()
+
+                ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks = {'time_counter': 240})
+                icemap_exp[exp] = compute_ice_map(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, icevars = icevars, year_clim = year_clim)
+                ds.close()
+
+                
+    clim_all = dict()
+    clim_all['atm_map'] = atmmap_exp
+    clim_all['atm3d_map'] = atmmap3d_exp
+    if coupled:
+        clim_all['oce_map'] = ocemap_exp
+        clim_all['ice_map'] = icemap_exp
+    
+    return clim_all
+
+def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart_out,
+                atmvars='rsut rlut rsdt tas pr'.split(),
+                ocevars='tos heatc qt_oce sos'.split(),
+                icevars='siconc sivolu sithic'.split(),
+                atm_only=False, year_clim=None, file_lists=None, ongoing = [], density=False):
+    """
+    Reads outputs and computes global means.
+
+    exps: list of experiment names to read
+    user: list of users
+    read_again: list of exps to read again (if run has proceeded)
+    atm_only: compute only atm diags
+    year_clim: set years for computing climatologies (if None, considers last 20 years)
+    """
+
+    time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+
+    if isinstance(user, str):
         user = len(exps) * [user]
     else:
         if len(user) != len(exps):
             raise ValueError(f"Length not corresponding: exps {len(exps)}, user {len(user)}")
 
     if file_lists is not None:
-        filz_exp, filz_nemo, filz_amoc, filz_ice = file_lists
+        if density:
+            filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice, filz_rho = file_lists
+        else:
+            filz_atm, filz_atm3d, filz_nemo, filz_amoc, filz_ice = file_lists
     else:
-        filz_exp  = dict()
+        filz_atm  = dict()
+        filz_atm3d = dict()
         filz_amoc = dict()
+        filz_rho = dict()
         filz_nemo = dict()
         filz_ice  = dict()
         for exp, us in zip(exps, user):
             remove_last_year = False
             if exp in ongoing:
                 remove_last_year = True
-            filz_exp[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = remove_last_year)
 
+            if density:
+                filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
+            else:
+                filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = remove_last_year)
+                
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _files_exist(pattern_or_list):
@@ -522,18 +771,17 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _open_mfdataset_safe(filz, exp, us, coupled, suffix='atm'):
         try:
-            return xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 240})
+            return xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240})
         except OSError as err:
             print(err)
             if err.errno == -101:
                 print('Run still ongoing, removing last year')
                 new_filz = file_list(exp, us, cart_exp=cart_exp,
                                     remove_last_year=True, coupled=coupled)
-                filz_exp_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
-                key = {'atm': filz_exp_new, 'oce': filz_nemo_new,
+                filz_atm_new, filz_atm3d_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
+                filz_new = {'atm': filz_atm_new, 'oce': filz_nemo_new,
                     'amoc': filz_amoc_new, 'ice': filz_ice_new}[suffix]
-                print(key[exp])
-                return xr.open_mfdataset(key[exp], use_cftime=True,
+                return xr.open_mfdataset(filz_new, decode_times=time_coder,
                                         chunks={'time_counter': 240})
             else:
                 raise err
@@ -548,21 +796,21 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     # ── per-domain compute (full dataset) ─────────────────────────────────────
 
     def _compute_atm(exp, us, coupled, vars=atmvars, save=True):
-        ds = _open_mfdataset_safe(filz_exp[exp], exp, us, coupled, suffix='atm')
+        ds = _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm')
         return compute_atm_clim(ds, exp,
                                 cart_out=cart_out if save else None,
                                 atmvars=vars, year_clim=year_clim)
 
     def _compute_oce(exp, us, vars=ocevars, save=True):
         print(filz_nemo[exp])
-        ds = xr.open_mfdataset(filz_nemo[exp], use_cftime=True,
+        ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder,
                                chunks={'time_counter': 240})
         return compute_oce_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 ocevars=vars, year_clim=year_clim)
 
     def _compute_ice(exp, us, vars=icevars, save=True):
-        ds = xr.open_mfdataset(filz_ice[exp], use_cftime=True,
+        ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder,
                                chunks={'time_counter': 240})
         return compute_ice_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
@@ -570,7 +818,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _compute_amoc(exp, save=True):
         try:
-            ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True,
+            ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
                                    chunks={'time_counter': 240})
             return compute_amoc_clim(ds, exp,
                                      cart_out=cart_out if save else None,
@@ -589,7 +837,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         print(f'[{domain}] Last year in saved data: {last_year}')
 
         # try:
-        #     ds = xr.open_mfdataset(filz, use_cftime=True, chunks={'time_counter': 240})
+        #     ds = xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240})
         # except OSError as err:
         ds = _open_mfdataset_safe(filz, exp, us, True if domain in ['oce','ice'] else False, suffix=domain) # THIS changes the file list!
 
@@ -606,7 +854,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _update_amoc(exp, amoc_ts_old, amoc_mean_old):
         last_year = int(amoc_ts_old.year[-1].values)
-        # ds = xr.open_mfdataset(filz_amoc[exp], use_cftime=True,
+        # ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
         #                        chunks={'time_counter': 240})
         ds = _open_mfdataset_safe(filz_amoc[exp], exp, us, True, suffix='amoc')
 
@@ -655,6 +903,9 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     amoc_ts_exp   = dict()
     iceclim_exp   = dict()
     icemean_exp   = dict()
+    if density:
+        rhoclim_exp = dict()
+        rhomean_exp = dict()
 
     coupled_exps = []
 
@@ -670,7 +921,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                        _files_exist(filz_nemo[exp]))
             print('coupled' if coupled else f'No ocean files found for {exp}. Assuming atm-only')
 
-        ocean_only = (not _files_exist(filz_exp[exp]) and
+        ocean_only = (not _files_exist(filz_atm[exp]) and
                       not os.path.exists(cart_out + f'clim_tuning_{exp}.nc'))
         if ocean_only:
             print(f'No atm files found for {exp}. Assuming ocean-only')
@@ -692,13 +943,16 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         ice_mean_path = cart_out + f'mean_ice_tuning_{exp}.nc'
         amoc_2d_path  = cart_out + f'amoc_2d_tuning_{exp}{yclim_tag}.nc'
         amoc_ts_path  = cart_out + f'amoc_ts_tuning_{exp}.nc'
+        rho_clim_path  = cart_out + f'clim_rho_tuning_{exp}{yclim_tag}.nc'
+        rho_mean_path  = cart_out + f'mean_rho_tuning_{exp}.nc'
 
         # ── per-domain actions ────────────────────────────────────────────────
         atm_action,  atm_missing  = _needs_compute(atm_clim_path, atm_mean_path, atmvars) if not ocean_only else (False, None)
         oce_action,  oce_missing  = _needs_compute(oce_clim_path, oce_mean_path, ocevars) if coupled        else (False, None)
         ice_action,  ice_missing  = _needs_compute(ice_clim_path, ice_mean_path, icevars) if coupled        else (False, None)
         amoc_action, _            = _needs_compute(amoc_2d_path,  amoc_ts_path)           if coupled        else (False, None)
-
+        if density:
+            rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)       if coupled        else (False, None)
         # ── ATM ───────────────────────────────────────────────────────────────
         if not ocean_only:
             if not atm_action:
@@ -711,7 +965,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'atm', atm_clim_path, atm_mean_path,
                     missing=atm_missing,
                     compute_fn_missing=lambda vars: compute_atm_clim(
-                        _open_mfdataset_safe(filz_exp[exp], exp, us, coupled, suffix='atm'),
+                        _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm'),
                         exp, cart_out=None, atmvars=vars, year_clim=year_clim))
 
             elif atm_action == 'update':
@@ -720,7 +974,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 mean_old = xr.load_dataset(atm_mean_path)
                 atmclim_exp[exp], atmmean_exp[exp] = _update_domain(
                     exp, us, 'atm', clim_old, mean_old,
-                    filz=filz_exp[exp],
+                    filz=filz_atm[exp],
                     compute_fn=lambda ds: compute_atm_clim(
                         ds, exp, cart_out=None, atmvars=atmvars, year_clim=year_clim),
                     clim_path=atm_clim_path, mean_path=atm_mean_path)
@@ -745,7 +999,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'oce', oce_clim_path, oce_mean_path,
                     missing=oce_missing,
                     compute_fn_missing=lambda vars: compute_oce_clim(
-                        xr.open_mfdataset(filz_nemo[exp], use_cftime=True, chunks={'time_counter': 240}),
+                        xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks={'time_counter': 240}),
                         exp, us, cart_exp=cart_exp, cart_out=None,
                         ocevars=vars, year_clim=year_clim))
 
@@ -776,7 +1030,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'ice', ice_clim_path, ice_mean_path,
                     missing=ice_missing,
                     compute_fn_missing=lambda vars: compute_ice_clim(
-                        xr.open_mfdataset(filz_ice[exp], use_cftime=True, chunks={'time_counter': 240}),
+                        xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks={'time_counter': 240}),
                         exp, us, cart_exp=cart_exp, cart_out=None,
                         icevars=vars, year_clim=year_clim))
 
@@ -795,6 +1049,19 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             else:  # 'from_scratch'
                 print('[ice] Computing from scratch...')
                 iceclim_exp[exp], icemean_exp[exp] = _compute_ice(exp, us)
+            
+            ## density
+            if density:
+                if not rho_action:
+                    print('[rho] Already computed, reading...')
+                    rhoclim_exp[exp] = xr.load_dataset(rho_clim_path)
+                    rhomean_exp[exp] = xr.load_dataset(rho_mean_path)
+                elif rho_action == 'from_scratch':
+                    ds = xr.open_mfdataset(filz_rho[exp], decode_times=time_coder, chunks = {'time': 20})
+                    rhomean_exp[exp], rhoclim_exp[exp] = compute_rho_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, year_clim = year_clim)
+                    ds.close()
+                else:
+                    raise ValueError('rho update not implemented')
 
             # ── AMOC ──────────────────────────────────────────────────────────
             if not amoc_action:
@@ -824,11 +1091,12 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         clim_all['ice_clim']  = iceclim_exp
         clim_all['ice_mean']  = icemean_exp
         clim_all['amoc_mean'] = amoc_mean_exp
-        clim_all['amoc_ts']   = amoc_ts_exp
+        clim_all['amoc_ts'] = amoc_ts_exp
+        if density:
+            clim_all['rho_mean'] = rhomean_exp
+            clim_all['rho_clim'] = rhoclim_exp
 
     return clim_all
-
-
 
 def create_ds_exp(exp_dict):
     """
@@ -847,7 +1115,6 @@ def create_ds_exp(exp_dict):
 
 
 ####################################### PLOTS #######################################
-
 
 def plot_amoc_2d(amoc_mean, exp = None, ax = None):
     if ax is None:
@@ -940,7 +1207,9 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
     if ylim is not None:
         ax.set_ylim(ylim)
 
-    fig.savefig(cart_out + f'check_tuning_{'-'.join(exps)}.pdf')
+    name = '-'.join(exps)
+    fig.savefig(cart_out + f'check_tuning_{name}.pdf')
+    #fig.savefig(cart_out + f'check_tuning_{'-'.join(exps)}.pdf')
     plt.show()
 
     return fig
@@ -1026,12 +1295,11 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
 
         ax.legend(handles=legend_elements)
 
-
-    fig.savefig(cart_out + f'check_amoc_vs_gtas_{'-'.join(exps)}.pdf')
+    name = '-'.join(exps)
+    fig.savefig(cart_out + f'check_amoc_vs_gtas_{name}.pdf')
     plt.show()
 
     return fig
-
 
 def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = None, cart_out = cart_out, n_end = 20, colors = None, labels = None, colors_legend = None, lw = 0.3, alpha = 0.5, background_color = None, cmap_name = 'viridis', xlabel = '', ylabel = '', cbar_label = ''):
 
@@ -1091,12 +1359,11 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
     cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), 
                         ax=ax, orientation='vertical', pad=0.15)
     cbar.set_label(cbar_label)
-
-    fig.savefig(cart_out + f'check_{x_ds.name}_vs_{y_ds.name}_{'-'.join(exps)}.pdf')
+    name = '-'.join(exps)
+    fig.savefig(cart_out + f'check_{x_ds.name}_vs_{y_ds.name}_{name}.pdf')
     plt.show()
 
     return
-
 
 def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted = False, datadir = datadir, cart_out = cart_out, colors = None, ylim = None):
     """
@@ -1154,7 +1421,8 @@ def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted =
         if not plot_anomalies: add = '_full'
         if weighted: add += '_weighted'
 
-        fig.savefig(cart_out + f'check_radiation_vs_ceres_{'-'.join(exps)}{add}.pdf')
+        name = '-'.join(exps)
+        fig.savefig(cart_out + f'check_radiation_vs_ceres_{name}{add}.pdf')
         figs.append(fig)
 
     return figs
@@ -1226,7 +1494,8 @@ def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weigh
         if weighted:
             add += '_weighted'
 
-        figname = f'check_radiation_vs_ref_{ref_exp}_{var}_{"-".join(exps)}{add}.pdf'
+        name = '-'.join(exps)
+        figname = f'check_radiation_vs_ref_{ref_exp}_{var}_{name}{add}.pdf'
         fig.savefig(os.path.join(cart_out, figname))
         figs.append(fig)
 
@@ -1342,7 +1611,6 @@ def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None
     
     return fig
 
-
 def plot_amoc_2d_all(amoc_mean, exps, cart_out = cart_out):
     nx = int(np.ceil(np.sqrt(len(exps))))
     ny = int(np.ceil(len(exps)/nx))
@@ -1360,11 +1628,11 @@ def plot_amoc_2d_all(amoc_mean, exps, cart_out = cart_out):
         plot_amoc_2d(amoc_mean[exp], exp=exp, ax = ax)
 
     plt.tight_layout()
-    fig.savefig(cart_out + f'check_amoc_2d_{'-'.join(exps)}.pdf')
+    name = '-'.join(exps)
+    fig.savefig(cart_out + f'check_amoc_2d_{name}.pdf')
     return fig
 
-
-def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
+def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out, colors=None):
     # Missing tas reference
     atmclim = create_ds_exp(atmclim)
     atmclim = atmclim.groupby('lat').mean()
@@ -1379,7 +1647,8 @@ def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
     if ref_exp is not None:
         y_ref = atmclim.sel(exp = ref_exp)['tas']
 
-    colors = get_colors(exps)
+    if colors is None:
+        colors = get_colors(exps)
 
     for exp, col in zip(exps, colors):
         y = atmclim.sel(exp = exp)['tas']
@@ -1396,11 +1665,13 @@ def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out):
     
     ax.set_xlabel('lat')
     if ref_exp is not None:
+        name = '-'.join([exp for exp in exps if exp != ref_exp])
         ax.set_ylabel(f'zonal temp diff wrt {ref_exp} (K)')
-        fig.savefig(cart_out + f'check_zonal_tas_{'-'.join([exp for exp in exps if exp != ref_exp])}_vs_{ref_exp}.pdf')
-    else:
+        fig.savefig(cart_out + f'check_zonal_tas_{name}_vs_{ref_exp}.pdf')
+    else:    
+        name = '-'.join(exps)
         ax.set_ylabel('zonal temp (K)')
-        fig.savefig(cart_out + f'check_zonal_tas_{'-'.join(exps)}.pdf')
+        fig.savefig(cart_out + f'check_zonal_tas_{name}.pdf')
 
 
     return fig
@@ -1442,15 +1713,15 @@ def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out):
     return fig
 
 
-def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out):
+def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = None, norm_factor = 1., cart_out = cart_out, colors = None):
     """
     Plots timeseries of var "vname" in domain "domain" for all exps.
 
     Domain is one among: ['atm', 'oce', 'ice']
     """
 
-    if domain not in ['atm', 'oce', 'ice', 'amoc']:
-        raise ValueError('domain should be one among: atm, oce, ice, amoc')
+    if domain not in ['atm', 'oce', 'ice', 'amoc', 'rho']:
+        raise ValueError('domain should be one among: atm, oce, ice, amoc, rho')
     
     if domain == 'amoc':
         ts_dataset = clim_all[f'{domain}_ts']
@@ -1483,7 +1754,8 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
     if ref_exp is not None:
         y_ref = norm_factor*ts_dataset.sel(exp = ref_exp)
 
-    colors = get_colors(exps)
+    if colors is None:
+        colors = get_colors(exps)
 
     for exp, col in zip(exps, colors):
         y = norm_factor*ts_dataset.sel(exp = exp)
@@ -1499,8 +1771,8 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
     
     ax.set_title('')
     ax.legend()
-
-    fig.savefig(cart_out + f'check_ts_{domain}_{vname}_{'-'.join([exp for exp in exps])}.pdf')
+    name = '-'.join([exp for exp in exps])
+    fig.savefig(cart_out + f'check_ts_{domain}_{vname}_{name}.pdf')
     
     return fig
 
@@ -1766,7 +2038,8 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
             filz = glob.glob(f'{cart_exp.format(user)}/{exp}/output/oifs/{exp}_atm_cmip6_1m_*.nc')
             if not filz:
                 raise FileNotFoundError(f"NetCDF files not found for {exp}")
-            ds = xr.open_mfdataset(filz, use_cftime=True, chunks={})
+
+            ds = xr.open_mfdataset(filz, decode_times=time_coder, chunks={})
             ds = ds[['rsut', 'rlut', 'rsdt', 'tas']]
             if 'cell' in ds.dims:
                 print(f"Regridding {exp} with CDO on {target_grid}...")
@@ -1835,10 +2108,633 @@ def calc_and_plot_slopes_from_raw(param_map, ref_exp='k000', user=None,
 
     return slope_dict, r2_dict, slope_30pct_dict, anom_full_dict
 
+#####################################################################################################################################################################
+
+def global_mean_oce_2d_region(ds, exp, user, var, cart_exp=cart_exp,
+                              lats=None, lons=None,
+                              compute=True, grid='T'):
+
+    area = get_areas_nemo(exp, user, cart_exp=cart_exp, grid=grid)
+    field = ds[var]
+    mask = np.ones_like(area, dtype=bool)
+
+    try:
+        if lats is not None:
+            mask &= (field.nav_lat > lats[0]) & (field.nav_lat < lats[1])
+        if lons is not None:
+            mask &= (field.nav_lon > lons[0]) & (field.nav_lon < lons[1])
+    except:
+        if lats is not None:
+            mask &= (field.nav_lat_grid_T > lats[0]) & (field.nav_lat_grid_T < lats[1])
+        if lons is not None:
+            mask &= (field.nav_lon_grid_T > lons[0]) & (field.nav_lon_grid_T < lons[1])
+
+    area_reg = area * mask
+
+    if compute:  
+        mean = ((field * area_reg).sum(['x', 'y'])/ area_reg.sum())
+        return mean.compute() 
+    
+    else:
+        return field *mask
+
+def compute_base_anom_state(exps, user=None, read_again=[], cart_exp='/ec/res4/scratch/{}/ece4/',
+                             cart_out='./output/', ref_exp=None, atm_only=False,
+                             year_clim=None, year='1850', density=False, color=None,
+                             var_list=None, otexps=False):
+    """
+    Compute anomaly state for a list of variables and associated domains.
+
+    Parameters
+    ----------
+    var_list : list of dicts, each with keys:
+        'name'   : str   - variable name, e.g. 'tas'
+        'domain' : str   - one of 'atm', 'oce', 'ice', 'amoc', 'rho', 'oce_map'
+        'region' : str, optional - 'SO', 'NA', or '' for global
+        'yr70'   : bool, optional - whether to return years 55-85 array (True) or scalar (False)
+                   (ignored when otexps=True)
+    otexps : bool
+        If False (default): coupled-experiment mode. Computes anomaly relative to a
+        linear-detrended reference experiment (ref_exp), with pi_mean/pi_std from years
+        120-150 of ref_exp, and yr70/yr150 anomalies relative to it.
+        If True: single-experiment / "ot" mode. No reference experiment or detrending;
+        just reads the last 20 years of exps directly as pi_mean/pi_std.
+
+    Example
+    -------
+    var_list = [{'name': 'tas', 'domain': 'atm', 'yr70': False}]
+    """
+    if cart_out is None:
+        raise ValueError('cart_out not specified!')
+    if not os.path.exists(cart_out):
+        os.mkdir(cart_out)
+    if var_list is None:
+        raise ValueError('var_list must be specified!')
+
+    # ── collect which variables are needed per domain ─────────────────────────
+    domain_vars = {}
+    for v in var_list:
+        domain_vars.setdefault(v['domain'], []).append(v['name'])
+
+    clim_all = read_output(exps, user=user, read_again=read_again, cart_exp=cart_exp,
+                           cart_out=cart_out, atm_only=atm_only, year_clim=year_clim, density=density)
+
+    map_all = read_output_map(exps, user=user, read_again=read_again, cart_exp=cart_exp,
+                           cart_out=cart_out, atm_only=atm_only, year_clim=year_clim, density=density)
+
+    # ── load datasets per domain ──────────────────────────────────────────────
+    def load_domain(clim_dict, key):
+        ds = clim_dict[key]
+        ds = {co: ds[co] for co in ds if ds[co] is not None}
+        return create_ds_exp(ds)
+
+    domain_map = {
+        'atm'    : lambda: load_domain(clim_all, 'atm_mean'),
+        'oce'    : lambda: load_domain(clim_all, 'oce_mean'),
+        'ice'    : lambda: load_domain(clim_all, 'ice_mean'),
+        'amoc'   : lambda: load_domain(clim_all, 'amoc_ts'),
+        'rho'    : lambda: load_domain(clim_all, 'rho_clim'),
+        'oce_map': lambda: load_domain(map_all,  'oce_map'),
+    }
+
+    loaded_domains = {}
+    for domain in domain_vars:
+        if domain in domain_map:
+            loaded_domains[domain] = domain_map[domain]()
+
+    # ── compute anomalies / values ───────────────────────────────────────────
+    results = {}
+
+    # experiment selector differs: list-based (coupled) vs direct (otexps)
+    exp0 = exps if otexps else exps[0]
+
+    for v in var_list:
+        vname  = v['name']
+        domain = v['domain']
+        region = v.get('region', '')
+        yr70   = v.get('yr70', False)
+
+        if domain == 'rho':
+            continue   # handled separately below
+
+        ds = loaded_domains[domain]
+
+        if domain == 'amoc':
+            var = ds.sel(x=0)
+            var.name = vname
+        else:
+            var = ds[vname]
+
+        # region-specific extraction
+        if vname == 'tos' and region == 'SO':
+            if otexps:
+                var_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0[0], 'itcv', vname,
+                                                    cart_exp, lats=[-60, -30])
+            else:
+                var_ref = global_mean_oce_2d_region(ds.sel(exp=ref_exp), ref_exp, 'itcv', vname,
+                                                    cart_exp, lats=[-60, -30])
+                var_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0, 'itcv', vname,
+                                                    cart_exp, lats=[-60, -30])
+
+        elif vname == 'tos' and region == 'NA':
+            na_lats = [45, 60]
+            na_lons = [-60, 0]
+            if otexps:
+                var_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0[0], 'itcv', vname,
+                                                    cart_exp, lats=na_lats, lons=na_lons)
+            else:
+                var_ref = global_mean_oce_2d_region(ds.sel(exp=ref_exp), ref_exp, 'itcv', vname,
+                                                    cart_exp, lats=na_lats, lons=na_lons)
+                var_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0, 'itcv', vname,
+                                                    cart_exp, lats=na_lats, lons=na_lons)
+        elif vname == 'tos' and region == 'global':
+            na_lats = [-60, 60]
+            if otexps:
+                var_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0[0], 'itcv', vname,
+                                                    cart_exp, lats=na_lats)
+            else:
+                var_ref = global_mean_oce_2d_region(ds.sel(exp=ref_exp), ref_exp, 'itcv', vname,
+                                                    cart_exp, lats=na_lats)
+                var_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0, 'itcv', vname,
+                                                    cart_exp, lats=na_lats)
+
+        elif vname == 'mldr10_1':
+            if otexps:
+                field_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0[0], 'itcv', vname,
+                                                   cart_exp, lats=[50, 70], lons=[-60, 0], compute=False)
+                var_exp = field_exp.max(axis=(1, 2))
+            else:
+                field_ref = global_mean_oce_2d_region(ds.sel(exp=ref_exp), ref_exp, 'itcv', vname,
+                                                    cart_exp, lats=[50, 70], lons=[-60, 0], compute=False)
+                var_ref = field_ref.max(axis=(1, 2))
+                field_exp = global_mean_oce_2d_region(ds.sel(exp=exp0), exp0, 'itcv', vname,
+                                                    cart_exp, lats=[50, 70], lons=[-60, 0], compute=False)
+                var_exp = field_exp.max(axis=(1, 2))
+
+        else:
+            var_exp = var.sel(exp=exp0)
+            if not otexps:
+                var_ref = var.sel(exp=ref_exp)
+
+        # ── build results: differ by mode ─────────────────────────────────────
+        if otexps:
+            results[vname + region] = {
+                'pi_mean': float(var_exp[-20:].mean().values),
+                'pi_std' : float(var_exp[-20:].std().values),
+            }
+        else:
+            trend, intercept, _, _, _ = stats.linregress(np.arange(0, len(var_ref)), var_ref.values)
+            x = var_exp - (trend * np.arange(0, len(var_ref)) + intercept)
+
+            results[vname + region] = {
+                'pi_mean': float(var_ref[120:150].mean().values),
+                'pi_std' : float(var_ref[120:150].std().values),
+                'yr70'   : x[55:85].values if yr70 else float(x[55:85].mean().values),
+                'yr150'  : float(x[-1].values),
+            }
+
+    # ── 3D rho variables ──────────────────────────────────────────────────────
+    rho_vars = [v for v in var_list if v['domain'] == 'rho']
+    if rho_vars:
+        rho_dataset = loaded_domains['rho']
+        rho_exp = exps if otexps else ref_exp   # otexps uses exps directly, coupled uses ref_exp
+
+        for v in rho_vars:
+            vname      = v['name']
+            lev_bounds = v.get('lev_bounds', [0, 500])
+            lats       = v.get('lats',       [-90, 90])
+            regions    = v.get('regions',    {})
+
+            var_mean = global_mean_oce_3d(rho_dataset.sel(exp=rho_exp), rho_exp, 'itcv',
+                                          vname, depth_mean=True, year=year)[vname]
+            var_deep = global_mean_oce_3d_region(rho_dataset.sel(exp=rho_exp), rho_exp, 'itcv',
+                                                  vname, depth_mean=True, lats=lats,
+                                                  lev_bounds=lev_bounds, year=year)[vname]
+
+            results[vname] = {
+                'pi_full': float(var_mean.values),
+                'pi_mean': float(var_deep.values),
+            }
+
+            for rname, rparams in regions.items():
+                val = global_mean_oce_3d_region(rho_dataset.sel(exp=rho_exp), rho_exp, 'itcv',
+                                                 vname, depth_mean=True,
+                                                 lats=rparams['lats'],
+                                                 lev_bounds=rparams['lev_bounds'],
+                                                 year=year)[vname]
+                results[vname][rname] = float(val.values)
+
+    return results
+   
+def return_vars(exps, user = None, vnames = None, domain=None, lat_bounds = [-90,90], lon_bounds = [0,360], read_again = [], ax=None, cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', atm_only = False, atmvars = 'rsut rlut rsdt tas'.split(), ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, density=False, flag_omega = False):
+    """
+    Returns vnames variables at year 70
+    """
+
+    cart_out_nc = cart_out + '/exps_clim/'
+    #cart_out_figs = cart_out + f'/check_{'-'.join(exps)}/'
+    
+    map_all = read_output_map(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, year_clim = year_clim, density=density, flag_omega=flag_omega)
+
+    dataset = map_all[f'{domain}_map']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+    dataset = create_ds_exp(dataset)
+
+    if domain == 'oce':
+
+        lats = dataset[vnames[0]].nav_lat
+        lons = dataset[vnames[0]].nav_lon
+        areas = get_areas_nemo(exps[0], 'itcv', cart_exp = cart_exp)
+        mask = get_mask_nemo(exps[0], 'itcv', cart_exp = cart_exp, grid = 'T')
+        nx, ny = np.shape(areas)
+        areas_ds = var.sel(exp=exps[0])[0].copy()
+        areas_ds.values = areas*mask
+    
+    elif domain in ['atm','atm3d' ,'cre']:
+        
+        lats = dataset[vnames[0]].lat
+        lons = dataset[vnames[0]].lon
+        nx = len(lats)
+        ny = len(lons)
+        weights = np.cos(np.deg2rad(lats))
+        areas_ds = weights
+    
+    area_reg = areas_ds.where(((lats < lat_bounds[1]) & (lats > lat_bounds[0])), np.nan)
+    
+    if(lon_bounds[0] < lon_bounds[1]):
+        area_box = area_reg.where(((lons < lon_bounds[1]) & (lons > lon_bounds[0])), np.nan)
+    else:
+        area_box = area_reg.where(((lons < lon_bounds[1]) | (lons > lon_bounds[0])), np.nan)
+    
+    results = {}
+
+    for vname in vnames:
+
+        var = dataset[vname]
+        if(vname == 'wap'):
+            var = var.sel(pressure_levels=50000)
+        trend = np.zeros([nx,ny])
+        intercept = np.zeros([nx,ny])
+
+        for i in range(nx):
+            for j in range(ny):
+
+                trend[i,j], intercept[i,j], _, _, _ = stats.linregress(np.arange(0,np.shape(var.sel(exp=exps[1]))[0]), var.sel(exp=exps[1])[:,i,j])
+
+        delta = (var.sel(exp=exps[0]) - (np.arange(0,len(var.sel(exp=exps[0]))))[:, np.newaxis, np.newaxis]*trend-intercept).rolling(year=30).mean()
+        #delta = (var.sel(exp=exps[0]) - (np.arange(0,300))[:, np.newaxis, np.newaxis]*trend).rolling(year=30).mean()
+
+    
+        # fig,ax = plt.subplots(1,1,subplot_kw={'projection': ccrs.PlateCarree()})
+        # d = ax.pcolormesh(lons, lats, area_box, transform=ccrs.PlateCarree())
+        # ax.coastlines()
+        # plt.show()
+        if vname =='wap' or vname =='omega':
+            clima = var.sel(exp=exps[1]).mean(dim='year')
+            omega_up = delta.where(clima>0, np.nan)
+            #omega_up = omega_up.where(delta<0, np.nan)
+
+            fig,ax = plt.subplots(1,2,subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)})
+            d = ax[0].pcolormesh(lons, lats, omega_up[85]*area_box, cmap='PuOr',transform=ccrs.PlateCarree())
+            ax[0].coastlines()
+            ax[0].set_extent([70, 290, -30, 30], crs=ccrs.PlateCarree())
+            #plt.colorbar(d, ax=ax[0])
+            omega = var.sel(exp=exps[0]).rolling(year=30).mean(dim='year')[85]
+            # e = ax[1].pcolormesh(lons, lats, delta.where(omega<-0.02, np.nan)[85], cmap='PuOr', transform=ccrs.PlateCarree())
+            # ax[1].coastlines()
+            # plt.show()
+
+            var_box = (omega_up*area_box).sum(axis=(1,2))/area_box.sum()
+        else:
+            if domain == 'oce':
+                var_box = (delta*area_box).sum(axis=(1,2))/np.nansum(area_box)
+            else :
+                var_box = (delta*area_box).sum(axis=(1,2))/area_box.sum()
+
+        results[vname] = var_box[85].values
+
+    return results
+
+def extract_variables_at_level(input_file, output_file, variables, level, level_dim='pressure_levels', level_units='Pa'):
+    """
+    Extract variables at a specific pressure level and save to a new netCDF file.
+
+    Parameters
+    ----------
+    input_file  : str  - path to input netCDF file
+    output_file : str  - path to output netCDF file
+    variables   : list - variable names to extract, e.g. ['omega', 'ua']
+    level       : float - level value to extract, e.g. 50000 (Pa) or 500 (hPa)
+    level_dim   : str  - name of the vertical dimension in the file
+    level_units : str  - just for metadata, 'Pa' or 'hPa'
+    """
+    ds = xr.open_dataset(input_file)
+
+    extracted = {}
+    for var in variables:
+        if var not in ds:
+            raise KeyError(f"Variable '{var}' not found in {input_file}. Available: {list(ds.data_vars)}")
+        extracted[var] = ds[var].sel({level_dim: level}, method='nearest')
+
+    ds_out = xr.Dataset(extracted)
+    ds_out.attrs = ds.attrs  # carry over global attributes
+    ds_out.attrs['extracted_level'] = f"{level} {level_units}"
+
+    ds_out.to_netcdf(output_file)
+    print(f"Saved {variables} at {level} {level_units} → {output_file}")
+
+    return ds_out
+
+def compute_atm_streamfunction(exps, user = None, cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', atm_only = False, atmvars = 'rsut rlut rsdt tas'.split(), ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, density=False):
+
+    cart_out_nc = cart_out + '/exps_clim/'
+    
+    map_all = read_output_map(exps, user = user, read_again = [], cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, year_clim = year_clim, density=density)
+
+    dataset = map_all[f'atm3d_map']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+
+    dataset = create_ds_exp(dataset)
+    var = dataset['va']
+    var_u = dataset['ua']
+
+    #streamfunction computation
+    var_zonal = var.sel(exp=exps[0]).mean(dim='lon')
+    v = var_zonal.transpose('year','lat', 'pressure_levels')
+    
+    plev = v.pressure_levels
+
+    a = 6378000 #m
+    g = 9.81  #m/s2
+
+    dp = xr.DataArray(np.gradient(plev),dims=["pressure_levels"],coords={"pressure_levels": plev})
+
+    v_int = (v * dp).cumsum(dim='pressure_levels')
+    coslat = np.cos(np.deg2rad(v.lat))
+    psi = (2 * np.pi * a / g) * coslat * v_int
+    psi.name = "psi"
+    psi.attrs["long_name"] = "Atmospheric mass streamfunction"
+    psi.attrs["units"] = "kg s-1"
+
+    # ── Omega (vertical pressure velocity) ───────────────────────────────────
+    # Select experiment and get full 3D (lat, lon, lev) fields
+    ua = var_u.sel(exp=exps[0])   # (year, lat, lon, pressure_levels)
+    va = var.sel(exp=exps[0])     # (year, lat, lon, pressure_levels)
+
+    # Spherical geometry: convert lat/lon to radians
+    lat_rad = np.deg2rad(ua.lat)   # (lat,)
+    lon_rad = np.deg2rad(ua.lon)   # (lon,)
+
+    # Grid spacings in radians
+    dlat = xr.DataArray(np.gradient(lat_rad), dims=['lat'], coords={'lat': ua.lat})
+    dlon = xr.DataArray(np.gradient(lon_rad), dims=['lon'], coords={'lon': ua.lon})
+
+    # Spherical divergence: (1/a*cos(lat)) * (du/dlon + d(v*cos(lat))/dlat)
+    coslat_2d = np.cos(lat_rad)   # broadcast over lon automatically
+
+    du_dlon = ua.differentiate('lon') / dlon / (a * coslat_2d)
+    vcoslat  = va * coslat_2d
+    dvcoslat_dlat = vcoslat.differentiate('lat') / dlat / (a * coslat_2d)
+    div = du_dlon + dvcoslat_dlat   # (year, lat, lon, pressure_levels)
+
+    # Integrate downward from TOA: omega(p) = -integral_0^p div dp'
+    # Pressure levels must be ordered top→bottom (ascending pressure values)
+    plev_vals = ua.pressure_levels.values
+    if plev_vals[0] > plev_vals[-1]:
+        # levels are bottom→top: flip, integrate, flip back
+        div = div.isel(pressure_levels=slice(None, None, -1))
+
+    dp_3d = xr.DataArray(
+        np.gradient(div.pressure_levels.values),
+        dims=['pressure_levels'],
+        coords={'pressure_levels': div.pressure_levels}
+    )
+    omega = -(div * dp_3d).cumsum(dim='pressure_levels')
+
+    # Flip back if we reversed earlier
+    if plev_vals[0] > plev_vals[-1]:
+        omega = omega.isel(pressure_levels=slice(None, None, -1))
+        omega = omega.assign_coords(pressure_levels=ua.pressure_levels)
+
+    omega.name = "omega"
+    omega.attrs["long_name"] = "Vertical pressure velocity"
+    omega.attrs["units"] = "Pa s-1"
+
+    atm3d = xr.open_mfdataset(cart_out_nc + f'map_atm3d_tuning_{exps[0]}.nc') 
+    atm3d['psi'] = psi
+    atm3d['omega'] = omega
+    atm3d.to_netcdf(cart_out_nc + f'map_atm3d_tuning_{exps[0]}_analysis.nc')
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+    # Left: streamfunction (zonal mean, pressure vs lat)
+    ax = axes[0]
+    cf = ax.contourf(v.lat, plev / 100, psi.mean(dim='year').T, levels=20, cmap='RdBu_r')
+    ax.invert_yaxis()
+    plt.colorbar(cf, ax=ax, label="kg s$^{-1}$")
+    ax.set_xlabel("Latitude")
+    ax.set_ylabel("Pressure (hPa)")
+    ax.set_title("Mean Streamfunction")
+
+    # Right: omega at 500 hPa (lat-lon map)
+    ax = axes[1]
+    omega_500 = omega.mean(dim='year').sel(pressure_levels=50000, method='nearest')  # Pa → nearest 500 hPa
+    cf2 = ax.contourf(omega.lon, omega.lat, omega_500, levels=20, cmap='RdBu_r', vcenter=0, vmax=0.1)
+    plt.colorbar(cf2, ax=ax, label="Pa s$^{-1}$")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_title("$\\omega$ at 500 hPa (mean)")
+
+    plt.tight_layout()
+    plt.show()
+
+def compute_heat_transport(exps, user=None, cart_exp='/ec/res4/scratch/{}/ece4/', cart_out='./output/',
+                           atm_only=False,
+                           atmvars='rsut rlut rsdt tas hfss hfls rlns rsns'.split(),
+                           ocevars='tos qt_oce'.split(), year_clim=None, density=False):
+    """
+    Compute implied meridional heat transports (THT, AHT, OHT) from TOA and surface fluxes.
+    Reads explicit ocean heat transport (hfbasin) from netCDF output.
+    Saves all timeseries to netCDF and plots the time-mean transports.
+    """
+    cart_out_nc = cart_out + '/exps_clim/'
+
+    # ── Read atmospheric data ─────────────────────────────────────────────────
+    map_all = read_output_map(exps, user=user, read_again=[], cart_exp=cart_exp, cart_out=cart_out_nc,
+                              atm_only=atm_only, atmvars=atmvars, ocevars=ocevars,
+                              year_clim=year_clim, density=density)
+    atm_dataset = map_all['atm_map']
+    atm_dataset = {co: atm_dataset[co] for co in atm_dataset if atm_dataset[co] is not None}
+    atm_dataset = create_ds_exp(atm_dataset)
+
+    # ── Build flux fields ─────────────────────────────────────────────────────
+    ds       = atm_dataset.sel(exp=exps)
+    toa_net  = ds['rsdt'] - ds['rsut'] - ds['rlut']
+    surf_net = -(ds['hfss'] + ds['hfls'] - ds['rsns'] - ds['rlns'])
+    atm_div  = toa_net - surf_net
+
+    # ── Integration function ──────────────────────────────────────────────────
+    a       = 6378000
+    lat     = toa_net.lat
+    lat_rad = np.deg2rad(lat)
+    dlat    = xr.DataArray(np.gradient(lat_rad), dims=['lat'], coords={'lat': lat})
+    coslat  = np.cos(lat_rad)
+
+    def integrate_transport(field):
+        zm        = field.mean(dim='lon')
+        zm_mean   = (zm * coslat).sum(dim='lat') / coslat.sum()
+        zm_corr   = zm - zm_mean
+        integrand = zm_corr * 2 * np.pi * a**2 * coslat * dlat
+        transport = integrand.cumsum(dim='lat') / 1e15
+        transport.attrs['units'] = 'PW'
+        return transport
+
+    # ── Compute implied transports ────────────────────────────────────────────
+    tht = integrate_transport(toa_net)
+    aht = integrate_transport(atm_div)
+    oht = tht - aht
+
+    tht.name = 'THT'; tht.attrs['long_name'] = 'Total meridional heat transport'
+    aht.name = 'AHT'; aht.attrs['long_name'] = 'Atmospheric meridional heat transport (implied)'
+    oht.name = 'OHT'; oht.attrs['long_name'] = 'Ocean meridional heat transport (implied)'
+
+    # ── Read explicit ocean heat transport from hfbasin ───────────────────────
+    exp_name = exps[0]
+    user_str = user if user is not None else 'itcv'
+    hfbasin_path = cart_exp.format(user_str) + f'{exp_name}/output/nemo/*diaptr2d*.nc'
+
+    try:
+        ds_hfbasin  = xr.open_mfdataset(hfbasin_path, combine='by_coords')
+
+        # hfbasin is typically (time, basin, lat) — select global basin (basin=0)
+        # basin indices: 0=global, 1=Atlantic, 2=Indo-Pacific (check your model convention)
+        oht_explicit = ds_hfbasin['hfbasin'].isel(basin=0)   # global ocean, (time, lat)
+        # rename time dim to year if needed
+
+        oht_explicit = oht_explicit.groupby('time_counter.year').mean().compute()
+        
+        # convert to PW if in W (hfbasin is usually already in W)
+        oht_explicit = oht_explicit
+        oht_explicit.name = 'OHT_explicit'
+        oht_explicit.attrs['long_name'] = 'Ocean meridional heat transport (explicit, hfbasin global)'
+        oht_explicit.attrs['units']     = 'PW'
+
+        # also save Atlantic basin if available
+        oht_atl = ds_hfbasin['hfbasin'].isel(basin=1) 
+        oht_atl = oht_atl.groupby('time_counter.year').mean().compute()
+
+        oht_atl.name = 'OHT_atl'
+        oht_atl.attrs['long_name'] = 'Ocean meridional heat transport (explicit, hfbasin Atlantic)'
+        oht_atl.attrs['units']     = 'PW'
+
+        has_hfbasin = True
+        print(f"Read hfbasin → {hfbasin_path}")
+
+    except Exception as e:
+        print(f"Warning: could not read hfbasin: {e}")
+        has_hfbasin = False
+
+    # ── Save to netCDF ────────────────────────────────────────────────────────
+    ds_out = xr.Dataset({'THT': tht, 'AHT': aht, 'OHT': oht})
+    if has_hfbasin:
+        ds_out['OHT_explicit'] = oht_explicit
+        ds_out['OHT_atl']      = oht_atl
+
+    ds_out.attrs['description'] = f'Meridional heat transport timeseries, exp={exp_name}'
+    outfile = cart_out_nc + f'heat_transport_{exp_name}.nc'
+    ds_out.to_netcdf(outfile)
+    print(f"Saved heat transports → {outfile}")
+
+    # ── Plot time mean ────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+    ax = axes[0]
+    ax.plot(lat, tht.mean(dim='year')[0], 'k-',  linewidth=2,   label='THT (implied)')
+    ax.plot(lat, aht.mean(dim='year')[0], 'r-',  linewidth=1.5, label='AHT (implied)')
+    ax.plot(lat, oht.mean(dim='year')[0], 'b-',  linewidth=1.5, label='OHT (implied)')
+    if has_hfbasin:
+        ax.plot(oht_explicit.nav_lat, oht_explicit.mean(dim='year'), 'b--', linewidth=1.5, label='OHT (explicit)')
+        ax.plot(oht_atl.nav_lat,      oht_atl.mean(dim='year'),      'g--', linewidth=1.5, label='OHT Atlantic (explicit)')
+    ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+    ax.axvline(0, color='k', linewidth=0.5, linestyle='--')
+    ax.set_xlabel('Latitude')
+    ax.set_ylabel('Heat transport (PW)')
+    ax.set_title(f'Meridional heat transport — {exp_name}')
+    ax.legend()
+
+    # ax = axes[1]
+    # if has_hfbasin:
+    #     diff = oht.mean(dim='year') - oht_explicit.mean(dim='year').interp(y=lat)
+    #     ax.plot(lat, diff, 'b-', label='OHT implied - explicit')
+    #     ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+    #     ax.set_xlabel('Latitude')
+    #     ax.set_ylabel('Difference (PW)')
+    #     ax.set_title('OHT residual (implied - explicit)')
+    #     ax.legend()
+    # else:
+    #     ax.plot(lat, toa_net.mean(dim=['lon', 'year']),  label='TOA net',        color='orange')
+    #     ax.plot(lat, surf_net.mean(dim=['lon', 'year']), label='Surface net',    color='teal')
+    #     ax.plot(lat, atm_div.mean(dim=['lon', 'year']),  label='Atm divergence', color='purple')
+    #     ax.axhline(0, color='k', linewidth=0.5, linestyle='--')
+    #     ax.set_xlabel('Latitude')
+    #     ax.set_ylabel('W m$^{-2}$')
+    #     ax.set_title('Zonal mean energy fluxes')
+    #     ax.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+    return ds_out
+
+def compute_trend(vars, exps, dataset):
+    
+    for var in vars:
+        for exp in exps:
+            var_pi = dataset[var].sel(exp=exp)
+            mask = ~np.isnan(var_pi)
+            print(f'-------- {exp} --------')
+        
+            # test full length trend
+            trend = stats.linregress(np.arange(0,np.shape(var_pi[mask])[0]), var_pi[mask])[0]
+            print(f'{var} trend for {exp}: {trend}')
+            print(f'{var} change in {np.shape(var_pi[mask])[0]} years: {trend*np.shape(var_pi[mask])[0]}\n')
+
+            # test 500 years trend
+            trend = stats.linregress(np.arange(0,499), var_pi[mask][:499])[0]
+            print(f'{var} trend for {exp} for first 500 ys: {trend}')
+            print(f'{var} change in 500 years: {trend*500}\n')
+
+            # test 300 years trend
+            trend = stats.linregress(np.arange(0,300), var_pi[mask][-300:])[0]
+            print(f'{var} trend for {exp} for last 300 ys: {trend}')
+            print(f'{var} change in 300 years: {trend*300}\n')
+
+            # test trend in 300 ys before 500
+            trend = stats.linregress(np.arange(0,299), var_pi[mask][200:499])[0]
+            print(f'{var} trend for {exp} for 200-500 ys: {trend}')
+            print(f'{var} change in 300 years: {trend*300}\n')
+
+def check_pi_state(clim_all, exps):
+    """
+    Compute trends for some variables to check experiment evolution.
+    """
+    vars = ['tas']
+    dataset = clim_all[f'atm_mean']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+    dataset = create_ds_exp(dataset)
+    compute_trend(vars, exps, dataset)
+
+    vars = ['tos', 'heatc']
+    dataset = clim_all[f'oce_mean']
+    dataset = {co: dataset[co] for co in dataset if dataset[co] is not None}
+    dataset = create_ds_exp(dataset)
+    compute_trend(vars, exps, dataset)
+
+
 # ============================================================
 ################################################ MAIN FUNCTION ###########################
 
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', rolling = None, file_lists = None, plot_zonal_vars = [], ongoing = []):
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, rolling = None, file_lists = None, plot_zonal_vars = [], ongoing = []):
     """
     Runs all multi-exps diagnostics.
 
@@ -1859,54 +2755,85 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     if not os.path.exists(cart_out_figs): os.mkdir(cart_out_figs)
 
     ### read outputs for all exps
-    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, file_lists = file_lists, ongoing = ongoing)
+    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density, file_lists = file_lists, ongoing = ongoing)
 
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
 
+    #check_pi_state(clim_all, exps)
+    allfigs = []
     ### Gregory and amoc gregory
-    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim)
+    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors)
     allfigs = [fig_greg]
 
     if coupled:
         if clim_all['amoc_ts'] is not None:
-            fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim)
+            fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors)
             allfigs.append(fig_amoc_greg)
 
             fig_amoc_all = plot_amoc_2d_all(clim_all['amoc_mean'], exps, cart_out = cart_out_figs)
             allfigs.append(fig_amoc_all)
 
-            fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=None)
+            fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig_amoc_ts)
 
-    # Atm fluxes and zonal tas
-    figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs)
-    allfigs += figs_rad
+    fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+    #fig_tas_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
+    #fig_toa_map  = plot_toa_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
 
-    fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs)
+    #fig_ice_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
+
+    #fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+    ##### CAN ADD NEW DIAGS HERE
+    if coupled:
+        #fig_n2 = plot_var_ts_3d(clim_all, 'rho', 'Nsquared', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        fig_toa = plot_var_ts(clim_all, 'atm', 'toa_net', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        #fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        #fig_heatc = plot_var_ts(clim_all, 'oce', 'heatc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        # fig_qtoce = plot_var_ts(clim_all, 'oce', 'qt_oce', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        # fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        # fig_siv =plot_var_ts(clim_all, 'ice', 'sivolu_N', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        #fig_sic = plot_var_ts(clim_all, 'ice', 'siconc_N', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        # fig_siv2 = plot_var_ts(clim_all, 'ice', 'sivolu_S', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        #fig_sic2 = plot_var_ts(clim_all, 'ice', 'siconc_S', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        # allfigs += [fig_tos, fig_heatc, fig_qtoce, fig_enebal, fig_siv, fig_sic, fig_siv2, fig_sic2]
+        if density:
+            #fig_rho = plot_var_ts_3d(clim_all, 'rho', 'density', cart_out = cart_out_figs, rolling=rolling)
+            #fig_den = plot_var_profile(clim_all, 'rho', 'density',  cart_out = cart_out_figs, colors=colors)
+            fig_n2 = plot_var_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
+            #fig_n2so = plot_var_region(clim_all, 'rho', 'Nsquared',[-60,-30],ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors,cart_exp = cart_exp)
+            #fig_n2zonal  = plot_zonal_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
+            #fig_siconc_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-0.5,0.6,0.1))
+            #fig_tos_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-1,1.1,0.1))
+            #fig_cre = plot_cre_zonal_map(clim_all, exps, ref_exp=ref_exp, cart_out = cart_out_figs)
+            
+            allfigs += [fig_n2]
+            
+    fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs, colors=colors)
     allfigs.append(fig_tas)
     
     for var in atmvars:
         if var not in 'rsut rlut rsdt tas'.split():
-            fig = plot_var_ts(clim_all, 'atm', var, cart_out = cart_out_figs, rolling=rolling)
+            fig = plot_var_ts(clim_all, 'atm', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
         if var in plot_zonal_vars:
-            fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp)
+            fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
             allfigs.append(fig)
 
     ###### CAN ADD NEW DIAGS HERE
     if coupled:
         for var in ocevars:
-            fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling)
+            fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
-        fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling)
+        fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
         allfigs.append(fig_enebal)
         
         for var in icevars:
             for emi in ['N', 'S']:
-                fig = plot_var_ts(clim_all, 'ice', var+f'_{emi}', cart_out = cart_out_figs, rolling=rolling)
+                fig = plot_var_ts(clim_all, 'ice', var+f'_{emi}', cart_out = cart_out_figs, rolling=rolling, colors=colors)
                 allfigs.append(fig)
 
 
@@ -1947,47 +2874,47 @@ def load_config(config_path):
     return config
 
 
-def main(config_path = None):
-    if config_path is None:
-        # Set up command line argument parser
-        parser = argparse.ArgumentParser(description='Load configuration from YAML file')
-        parser.add_argument('config', type=str, nargs='?', default='config.yml', help='Path to YAML configuration file')
+# def main(config_path = None):
+#     if config_path is None:
+#         # Set up command line argument parser
+#         parser = argparse.ArgumentParser(description='Load configuration from YAML file')
+#         parser.add_argument('config', type=str, nargs='?', default='config.yml', help='Path to YAML configuration file')
 
-        args = parser.parse_args()
+#         args = parser.parse_args()
 
-        config_path = args.config
+#         config_path = args.config
     
-    # Load and parse configuration
-    config = load_config(config_path)
+#     # Load and parse configuration
+#     config = load_config(config_path)
 
-    exps = config.get('exps', [])
-    user = config.get('user', os.getenv('USER'))
-    read_again = config.get('read_again', [])
-    cart_exp = config.get('cart_exp', '/ec/res4/scratch/{}/ece4/')
-    cart_out = config.get('cart_out')
-    imbalance = config.get('imbalance')
-    ref_exp = config.get('ref_exp')
-    plot_param = config.get('plot_param', False)
-    plot_diffref = config.get('plot_diffref', False)
-    param_map = config.get('param_map', {})
-    skip_first_year = config.get('skip_first_year', False)
-    
-
-    if user is None:
-        user = os.getenv('USER')
-    
-    # Example: Print loaded configuration
-    print(f"Experiments: {exps}")
-    print(f"User: {user}")
-    print(f"Read again: {read_again}")
-    print(f"Cart exp: {cart_exp}")
-    print(f"Cart out: {cart_out}")
-
-    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
-
-    return clim_all, figs
+#     exps = config.get('exps', [])
+#     user = config.get('user', os.getenv('USER'))
+#     read_again = config.get('read_again', [])
+#     cart_exp = config.get('cart_exp', '/ec/res4/scratch/{}/ece4/')
+#     cart_out = config.get('cart_out')
+#     imbalance = config.get('imbalance')
+#     ref_exp = config.get('ref_exp')
+#     plot_param = config.get('plot_param', False)
+#     plot_diffref = config.get('plot_diffref', False)
+#     param_map = config.get('param_map', {})
+#     skip_first_year = config.get('skip_first_year', False)
     
 
-# Main execution
-if __name__ == '__main__':
-    main()
+#     if user is None:
+#         user = os.getenv('USER')
+    
+#     # Example: Print loaded configuration
+#     print(f"Experiments: {exps}")
+#     print(f"User: {user}")
+#     print(f"Read again: {read_again}")
+#     print(f"Cart exp: {cart_exp}")
+#     print(f"Cart out: {cart_out}")
+
+#     clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
+
+#     return clim_all, figs
+    
+
+# # Main execution
+# if __name__ == '__main__':
+#     main()

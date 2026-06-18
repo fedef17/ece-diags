@@ -953,6 +953,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         amoc_action, _            = _needs_compute(amoc_2d_path,  amoc_ts_path)           if coupled        else (False, None)
         if density:
             rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)       if coupled        else (False, None)
+            
         # ── ATM ───────────────────────────────────────────────────────────────
         if not ocean_only:
             if not atm_action:
@@ -2874,47 +2875,47 @@ def load_config(config_path):
     return config
 
 
-# def main(config_path = None):
-#     if config_path is None:
-#         # Set up command line argument parser
-#         parser = argparse.ArgumentParser(description='Load configuration from YAML file')
-#         parser.add_argument('config', type=str, nargs='?', default='config.yml', help='Path to YAML configuration file')
+def main(config_path = None):
+    if config_path is None:
+        # Set up command line argument parser
+        parser = argparse.ArgumentParser(description='Load configuration from YAML file')
+        parser.add_argument('config', type=str, nargs='?', default='config.yml', help='Path to YAML configuration file')
 
-#         args = parser.parse_args()
+        args = parser.parse_args()
 
-#         config_path = args.config
+        config_path = args.config
     
-#     # Load and parse configuration
-#     config = load_config(config_path)
+    # Load and parse configuration
+    config = load_config(config_path)
 
-#     exps = config.get('exps', [])
-#     user = config.get('user', os.getenv('USER'))
-#     read_again = config.get('read_again', [])
-#     cart_exp = config.get('cart_exp', '/ec/res4/scratch/{}/ece4/')
-#     cart_out = config.get('cart_out')
-#     imbalance = config.get('imbalance')
-#     ref_exp = config.get('ref_exp')
-#     plot_param = config.get('plot_param', False)
-#     plot_diffref = config.get('plot_diffref', False)
-#     param_map = config.get('param_map', {})
-#     skip_first_year = config.get('skip_first_year', False)
-    
-
-#     if user is None:
-#         user = os.getenv('USER')
-    
-#     # Example: Print loaded configuration
-#     print(f"Experiments: {exps}")
-#     print(f"User: {user}")
-#     print(f"Read again: {read_again}")
-#     print(f"Cart exp: {cart_exp}")
-#     print(f"Cart out: {cart_out}")
-
-#     clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
-
-#     return clim_all, figs
+    exps = config.get('exps', [])
+    user = config.get('user', os.getenv('USER'))
+    read_again = config.get('read_again', [])
+    cart_exp = config.get('cart_exp', '/ec/res4/scratch/{}/ece4/')
+    cart_out = config.get('cart_out')
+    imbalance = config.get('imbalance')
+    ref_exp = config.get('ref_exp')
+    plot_param = config.get('plot_param', False)
+    plot_diffref = config.get('plot_diffref', False)
+    param_map = config.get('param_map', {})
+    skip_first_year = config.get('skip_first_year', False)
     
 
-# # Main execution
-# if __name__ == '__main__':
-#     main()
+    if user is None:
+        user = os.getenv('USER')
+    
+    # Example: Print loaded configuration
+    print(f"Experiments: {exps}")
+    print(f"User: {user}")
+    print(f"Read again: {read_again}")
+    print(f"Cart exp: {cart_exp}")
+    print(f"Cart out: {cart_out}")
+
+    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
+
+    return clim_all, figs
+    
+
+# Main execution
+if __name__ == '__main__':
+    main()

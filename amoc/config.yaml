@@ -24,7 +24,7 @@ plot_settings:
   # AMOC timeseries plot settings  
   timeseries_plot:
     depth_range: [500, 2000]
-    lat_range: [38, 50]
+    lat_range: [25, 28]
     ylim: [5, 20]
     basin: 2  # Atlantic basin
 

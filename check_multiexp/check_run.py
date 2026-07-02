@@ -66,9 +66,10 @@ def get_spectral_colors(n):
 
     return colors
 
-def add_diahsb_init_to_restart(rest_file, rest_file_new = None):
+def add_diahsb_init_to_restart(rest_file, rest_file_new = None, new_vars_2d = ['surf_ini', 'ssh_ini'], new_vars_3d = ['e3t_ini', 'tmask_ini', 'hc_loc_ini', 'sc_loc_ini']):
     """
     Adds missing fields to a restart (produced before 4.1.2) and creates a new restart (compatible with 4.1.2), filling missing variables with zeros.
+    New variables can be added.
     """
 
     rest_oce = xr.load_dataset(rest_file)
@@ -84,13 +85,13 @@ def add_diahsb_init_to_restart(rest_file, rest_file_new = None):
         rest_oce[f'frc_{var}'] = xr.DataArray(0.0)
 
     # Add 2D variables (time_counter, y, x)
-    for var in ['surf_ini', 'ssh_ini']:
+    for var in new_vars_2d:
         rest_oce[var] = xr.DataArray(
         np.zeros((nt, ny, nx)),
         dims=['time_counter', 'y', 'x'])
 
     # Add 3D variables (time_counter, nav_lev, y, x)
-    for var in ['e3t_ini', 'tmask_ini', 'hc_loc_ini', 'sc_loc_ini']:
+    for var in new_vars_3d:
         rest_oce[var] = xr.DataArray(
         np.zeros((nt, nz, ny, nx)),
         dims=['time_counter', 'nav_lev', 'y', 'x'])
@@ -418,7 +419,7 @@ def compute_ice_map(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ice
 
 def compute_oce_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, grid = 'T'):
     ds = ds.rename({'time_counter': 'time'})
-    # print(ds.data_vars)
+    #print(ds.data_vars)
     ds = ds[ocevars].groupby('time.year').mean()
     if f'x_grid_{grid}_inner' in ds.dims:
         ds = ds.rename({f'x_grid_{grid}_inner': 'x', f'y_grid_{grid}_inner': 'y'})
@@ -779,7 +780,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 new_filz = file_list(exp, us, cart_exp=cart_exp,
                                     remove_last_year=True, coupled=coupled)
                 filz_atm_new, filz_atm3d_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
-                filz_new = {'atm': filz_atm_new, 'oce': filz_nemo_new,
+                filz_new = {'atm': filz_atm_new, 'atm3d': filz_atm3d_new, 'oce': filz_nemo_new,
                     'amoc': filz_amoc_new, 'ice': filz_ice_new}[suffix]
                 return xr.open_mfdataset(filz_new, decode_times=time_coder,
                                         chunks={'time_counter': 240})
@@ -802,32 +803,29 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                                 atmvars=vars, year_clim=year_clim)
 
     def _compute_oce(exp, us, vars=ocevars, save=True):
-        print(filz_nemo[exp])
-        ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder,
-                               chunks={'time_counter': 240})
+        #print(filz_nemo[exp])
+        ds = _open_mfdataset_safe(filz_nemo[exp], exp, us, coupled=True, suffix='oce')
+        # ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder,
+        #                        chunks={'time_counter': 240})
         return compute_oce_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 ocevars=vars, year_clim=year_clim)
 
     def _compute_ice(exp, us, vars=icevars, save=True):
-        ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder,
-                               chunks={'time_counter': 240})
+        ds = _open_mfdataset_safe(filz_ice[exp], exp, us, coupled=True, suffix='ice')
+        # ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder,
+        #                        chunks={'time_counter': 240})
         return compute_ice_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 icevars=vars, year_clim=year_clim)
 
     def _compute_amoc(exp, save=True):
-        try:
-            ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
-                                   chunks={'time_counter': 240})
-            return compute_amoc_clim(ds, exp,
-                                     cart_out=cart_out if save else None,
-                                     year_clim=year_clim)
-        except Exception as err:
-            print("ERROR WITH MOC!")
-            print(err)
-            print("SKIPPING...")
-            return None, None
+        ds = _open_mfdataset_safe(filz_amoc[exp], exp, us, coupled=True, suffix='amoc')
+            # ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
+            #                        chunks={'time_counter': 240})
+        return compute_amoc_clim(ds, exp,
+                                cart_out=cart_out if save else None,
+                                year_clim=year_clim)
 
     # ── per-domain update (append new timesteps only) ─────────────────────────
 
@@ -2735,7 +2733,7 @@ def check_pi_state(clim_all, exps):
 # ============================================================
 ################################################ MAIN FUNCTION ###########################
 
-def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, rolling = None, file_lists = None, plot_zonal_vars = [], ongoing = []):
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), ocevars = 'tos heatc qt_oce sos mldr10_1'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, rolling = None, file_lists = None, plot_zonal_vars = [], ongoing = []):
     """
     Runs all multi-exps diagnostics.
 

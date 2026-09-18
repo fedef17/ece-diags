@@ -772,7 +772,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _open_mfdataset_safe(filz, exp, us, coupled, suffix='atm'):
         try:
-            return xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240})
+            return xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240}, data_vars='all')
         except OSError as err:
             print(err)
             if err.errno == -101:
@@ -782,8 +782,11 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 filz_atm_new, filz_atm3d_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
                 filz_new = {'atm': filz_atm_new, 'atm3d': filz_atm3d_new, 'oce': filz_nemo_new,
                     'amoc': filz_amoc_new, 'ice': filz_ice_new}[suffix]
-                return xr.open_mfdataset(filz_new, decode_times=time_coder,
-                                        chunks={'time_counter': 240})
+                file = xr.open_mfdataset(filz_new, decode_times=time_coder,
+                                        chunks={'time_counter': 240}, data_vars='all' )
+                print(f'  → opened {len(filz_new)} files, last year removed')
+                print(f'  → new last year: {file.time_counter[-1].values}')
+                return file
             else:
                 raise err
 
@@ -2827,8 +2830,8 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
-        fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        allfigs.append(fig_enebal)
+        # = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+        #allfigs.append(fig_enebal)
         
         for var in icevars:
             for emi in ['N', 'S']:

@@ -1138,7 +1138,7 @@ def plot_amoc_2d(amoc_mean, exp = None, ax = None, basin = 2):
     try:
         amoc_mean.sel(basin = basin).plot.contourf(x = 'nav_lat', y = 'depthw', ylim = (3000, 0), xlim = (-30, 70), levels = np.arange(-16, 16.1, 2), ax = ax)
     except:
-        amoc_mean.sel(basin = 1).plot.contourf(x = 'nav_lat', y = 'depthw', ylim = (3000, 0), xlim = (-30, 70), levels = np.arange(-16, 16.1, 2), ax = ax)
+        amoc_mean.plot.contourf(x = 'nav_lat', y = 'depthw', ylim = (3000, 0), xlim = (-30, 70), levels = np.arange(-16, 16.1, 2), ax = ax)
         
     ax.set_title(exp)
 

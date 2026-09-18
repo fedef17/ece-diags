@@ -9,7 +9,7 @@ import os
 import pandas as pd
 # import xmca
 # from xmca.array import MCA  # numpy
-# from xmca.xarray import xMCA  # numpy
+# from xmca.xarray import xMCA  # numpydef
 
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
@@ -519,9 +519,14 @@ def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max 
     if plot and ax is None:
         fig, ax = plt.subplots()
 
+    if len(data.basin) < 2:
+        print('Basin 2 not found! fall back to basin 1 (global MOC)')
+        basin = 1
+
+    print(data)
     amoc = data.sel(
         depthw=slice(depth_min, depth_max), 
-        basin=2
+        basin=basin
     )['msftyz']
     
     # Apply latitude constraint and compute
@@ -1078,7 +1083,11 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
             else:  # 'from_scratch'
                 print('[amoc] Computing from scratch...')
-                amoc_mean_exp[exp], amoc_ts_exp[exp] = _compute_amoc(exp, save=True)
+                try:
+                    amoc_mean_exp[exp], amoc_ts_exp[exp] = _compute_amoc(exp, save=True)
+                except Exception as e:
+                    print(e)
+                    print('Cannot compute AMOC! pass')
 
     # ── assemble output ───────────────────────────────────────────────────────
     clim_all = dict()
@@ -1115,14 +1124,22 @@ def create_ds_exp(exp_dict):
 
 ####################################### PLOTS #######################################
 
-def plot_amoc_2d(amoc_mean, exp = None, ax = None):
+def plot_amoc_2d(amoc_mean, exp = None, ax = None, basin = 2):
     if ax is None:
         fig, ax = plt.subplots(figsize = (12,8))
 
     if isinstance(amoc_mean, xr.Dataset):
         amoc_mean = amoc_mean['msftyz']
 
-    amoc_mean.sel(basin = 2).plot.contourf(x = 'nav_lat', y = 'depthw', ylim = (3000, 0), xlim = (-30, 70), levels = np.arange(-16, 16.1, 2), ax = ax)
+    # if len(amoc_mean.basin) < 2:
+    #     print('Basin 2 not found! fall back to basin 1 (global MOC)')
+    #     basin = 1
+
+    try:
+        amoc_mean.sel(basin = basin).plot.contourf(x = 'nav_lat', y = 'depthw', ylim = (3000, 0), xlim = (-30, 70), levels = np.arange(-16, 16.1, 2), ax = ax)
+    except:
+        amoc_mean.sel(basin = 1).plot.contourf(x = 'nav_lat', y = 'depthw', ylim = (3000, 0), xlim = (-30, 70), levels = np.arange(-16, 16.1, 2), ax = ax)
+        
     ax.set_title(exp)
 
     return ax
@@ -1149,6 +1166,7 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
     """
 
     fig, ax = plt.subplots(figsize=(12, 8))
+    shift = 0.05
 
     ax.axhline(0., color = 'grey', lw = 0.5)
 
@@ -1167,7 +1185,7 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
             x, y = atmmean_exp[exp].tas.sel(year = slice(year_clim[0], year_clim[1])).mean(), atmmean_exp[exp].toa_net.sel(year = slice(year_clim[0], year_clim[1])).mean()
         ax.scatter(x, y, s = s_dot, color = col, marker = 'o', alpha = 0.5, zorder = 3)
         if labels:
-            ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
+            ax.text(x+shift, y+shift, exp, fontsize=12, ha='right', color = col)
 
     ### plot target shades
     xlim_tot = ax.get_xlim()
@@ -1241,6 +1259,9 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
             y = y.groupby('time_counter.year').mean()
             
         y = y.squeeze()
+        if len(y.year > x.year):
+            print('cutting excess data in amoc')
+            y = y.sel(year = slice(x.year.min(), x.year.max()))
 
         if not rolling:
             ax.plot(x, y, label = exp, lw = lw, color = col)
@@ -1676,7 +1697,7 @@ def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out, co
     return fig
 
 
-def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out):
+def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out, colors = None):
     # Missing tas reference
     atmclim = create_ds_exp(atmclim)
     atmclim = atmclim.groupby('lat').mean()
@@ -1691,7 +1712,8 @@ def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out):
     if ref_exp is not None:
         y_ref = atmclim.sel(exp = ref_exp)[var]
 
-    colors = get_colors(exps)
+    if colors is None:
+        colors = get_colors(exps)
 
     for exp, col in zip(exps, colors):
         y = atmclim.sel(exp = exp)[var]
@@ -1742,6 +1764,11 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
     
     ts_dataset = create_ds_exp(ts_dataset)
 
+    if isinstance(ts_dataset, xr.Dataset):
+        if vname not in ts_dataset.data_vars:
+            print(f'Variable {vname} cannot be found in dataset for domain {domain}. Skipping..')
+            return fig
+
     if ref_exp is not None and ref_exp not in exps:
         print(f'WARNING: {ref_exp} not in exps! plotting absolute values')
         ref_exp = None
@@ -1779,7 +1806,7 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
 def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
     fact = 334*1000*1000/(3.1e7*4*3.14*6e6**2) # to convert sea ice formation in W/m2
 
-    # (clim_all['oce_mean'][exp]['enebal']+clim_all['ice_mean'][exp]['sivolu_N'].diff('year')*fact).rolling(year = 20).mean().plot(label = exp, color = col, ls = ':')
+    (clim_all['oce_mean'][exp]['enebal']+clim_all['ice_mean'][exp]['sivolu_N'].diff('year')*fact).rolling(year = 20).mean().plot(label = exp, color = col, ls = ':')
     return
 
 # ============================================================
@@ -2776,40 +2803,11 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig_amoc_ts)
 
-    fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-    #fig_tas_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
-    #fig_toa_map  = plot_toa_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
+    # Atm fluxes and zonal tas
+    figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs, colors = colors)
+    allfigs += figs_rad
 
-    #fig_ice_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
-
-    #fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-    ##### CAN ADD NEW DIAGS HERE
-    if coupled:
-        #fig_n2 = plot_var_ts_3d(clim_all, 'rho', 'Nsquared', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        fig_toa = plot_var_ts(clim_all, 'atm', 'toa_net', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        #fig_tas2 = plot_var_ts(clim_all, 'atm', 'tas', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        fig_tos = plot_var_ts(clim_all, 'oce', 'tos', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        #fig_heatc = plot_var_ts(clim_all, 'oce', 'heatc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        # fig_qtoce = plot_var_ts(clim_all, 'oce', 'qt_oce', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        # fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        # fig_siv =plot_var_ts(clim_all, 'ice', 'sivolu_N', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        #fig_sic = plot_var_ts(clim_all, 'ice', 'siconc_N', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        # fig_siv2 = plot_var_ts(clim_all, 'ice', 'sivolu_S', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        #fig_sic2 = plot_var_ts(clim_all, 'ice', 'siconc_S', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        # allfigs += [fig_tos, fig_heatc, fig_qtoce, fig_enebal, fig_siv, fig_sic, fig_siv2, fig_sic2]
-        if density:
-            #fig_rho = plot_var_ts_3d(clim_all, 'rho', 'density', cart_out = cart_out_figs, rolling=rolling)
-            #fig_den = plot_var_profile(clim_all, 'rho', 'density',  cart_out = cart_out_figs, colors=colors)
-            fig_n2 = plot_var_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
-            #fig_n2so = plot_var_region(clim_all, 'rho', 'Nsquared',[-60,-30],ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors,cart_exp = cart_exp)
-            #fig_n2zonal  = plot_zonal_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
-            #fig_siconc_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-0.5,0.6,0.1))
-            #fig_tos_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-1,1.1,0.1))
-            #fig_cre = plot_cre_zonal_map(clim_all, exps, ref_exp=ref_exp, cart_out = cart_out_figs)
-            
-            allfigs += [fig_n2]
-            
-    fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs, colors=colors)
+    fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs, colors = colors)
     allfigs.append(fig_tas)
     
     for var in atmvars:
@@ -2817,9 +2815,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig = plot_var_ts(clim_all, 'atm', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
-        if var in plot_zonal_vars:
-            fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
-            allfigs.append(fig)
+            if var in plot_zonal_vars:
+                fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
+                allfigs.append(fig)
 
     ###### CAN ADD NEW DIAGS HERE
     if coupled:
@@ -2827,20 +2825,39 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
-        fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling, colors=colors)
-        allfigs.append(fig_enebal)
+        try:
+            fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling)
+            allfigs.append(fig_enebal)
+        except:
+            print('could not plot enebal')
         
         for var in icevars:
             for emi in ['N', 'S']:
                 fig = plot_var_ts(clim_all, 'ice', var+f'_{emi}', cart_out = cart_out_figs, rolling=rolling, colors=colors)
                 allfigs.append(fig)
 
+    # MAPS
+    #fig_tas_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
+    #fig_toa_map  = plot_toa_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
+
+    #fig_ice_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-5,6,1))
+    # if coupled:
+        #fig_n2zonal  = plot_zonal_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
+        #fig_siconc_map  = plot_var_map(clim_all, 'ice', 'siconc', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-0.5,0.6,0.1))
+        #fig_tos_map  = plot_var_map(clim_all, 'atm', 'tas', ref_exp=ref_exp,cart_out = cart_out_figs, clevels=np.arange(-1,1.1,0.1))
+        #fig_cre = plot_cre_zonal_map(clim_all, exps, ref_exp=ref_exp, cart_out = cart_out_figs)
+
+        # if density:
+        #     #fig_rho = plot_var_ts_3d(clim_all, 'rho', 'density', cart_out = cart_out_figs, rolling=rolling)
+        #     #fig_den = plot_var_profile(clim_all, 'rho', 'density',  cart_out = cart_out_figs, colors=colors)
+        #     fig_n2 = plot_var_profile(clim_all, 'rho', 'Nsquared', ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors)
+        #     #fig_n2so = plot_var_region(clim_all, 'rho', 'Nsquared',[-60,-30],ref_exp=ref_exp, vcoord='depth_mid', cart_out = cart_out_figs, colors=colors,cart_exp = cart_exp)
+            
+        #     allfigs += [fig_n2]
 
     # --- Optional diagnostics for tuning experiments
     if plot_diffref:
-        figs_diffref = plot_zonal_fluxes_vs_ref(
-            clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs
-        )
+        figs_diffref = plot_zonal_fluxes_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
         allfigs += figs_diffref
 
     if plot_param:

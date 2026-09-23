@@ -117,6 +117,15 @@ def get_areas_nemo(exp, user, cart_exp = cart_exp, grid = 'T'):
 
     return ocean_area
 
+def get_areas_oifs(exp, user, cart_exp = cart_exp):
+    areas = xr.load_dataset(cart_exp.format(user) + f'/{exp}/areas.nc')
+    masks = xr.load_dataset(cart_exp.format(user) + f'/{exp}/masks.nc')
+
+    oce_weights = (areas['TL63-ocean.srf']*(~masks['TL63-ocean.msk'].values.astype(bool))).values.squeeze()
+    land_weights = (areas['TL63-land.srf']*(~masks['TL63-land.msk'].values.astype(bool))).values.squeeze()
+
+    return oce_weights, land_weights
+
 def get_mask_nemo(exp, user, cart_exp = cart_exp, grid = 'T'):
     #ocean areas
     masks = xr.load_dataset(cart_exp.format(user) + f'/{exp}/masks.nc')
@@ -133,7 +142,7 @@ def get_ghflux(exp, user, cart_exp = cart_exp):
     # 0.1 W/m2
     try:
         gout = xr.load_dataset(cart_exp.format(user) + f'/{exp}/Goutorbe_ghflux.nc') # mW/m2
-        return float(global_mean(gout.squeeze().mean('lon').drop_vars('time')).gh_flux.values)/1000./0.66 # only over ocean
+        return float(global_mean(gout.drop_vars('time')).gh_flux.values[0])/1000./0.7 # only over ocean
     except Exception as err:
         logging.error("ERROR in get_ghflux:")
         logging.error(err)
@@ -153,21 +162,14 @@ def global_mean(ds, compute = True):
         weights = np.cos(np.deg2rad(all_lats))
 
     if 'time' in ds.coords:
-        if 'cell' in ds.dims:
-            ds_mean = ds.groupby('time.year').mean().groupby('lat').mean().weighted(weights).mean('lat')
-        else:
-            ds_mean = (ds.groupby('time.year').mean().groupby('lat').mean().weighted(weights).mean('lat')).mean('lon')
+        ds = ds.groupby('time.year').mean()
+    
+    if 'cell' in ds.dims:
+        ds_mean = ds.groupby('lat').mean().weighted(weights).mean('lat')
     else:
-        if 'cell' in ds.dims:
-            ds_mean = ds.groupby('lat').mean().weighted(weights).mean('lat')
-        else:
-            ds_mean = (ds.groupby('lat').mean().weighted(weights).mean('lat')).mean('lon')
+        ds_mean = (ds.groupby('lat').mean().weighted(weights).mean('lat')).mean('lon')
+    
 
-    
-    # ds_mean = ds_mean['rsut rlut rsdt tas'.split()]
-    if 'rlut' in ds_mean:
-        ds_mean['toa_net'] = ds_mean.rsdt - ds_mean.rlut - ds_mean.rsut
-    
     if compute:
         ds_mean = ds_mean.compute()
 
@@ -192,8 +194,8 @@ def global_mean_oce_2d(ds, exp, user, cart_exp = cart_exp, compute = True, grid 
     year_sec = 24*60*60*365.25
     gh_flux = get_ghflux(exp, user, cart_exp = cart_exp)
 
-    # heat_trend = ds_time_mean['heatc'].diff('year')/year_sec/tot_area
-    # ds_time_mean['enebal'] = heat_trend - ds_time_mean.qt_oce - gh_flux # source of energy in the ocean
+    heat_trend = ds_time_mean['heatc'].diff('year')/year_sec/tot_area
+    ds_time_mean['oce_imb'] = heat_trend - ds_time_mean.qt_oce - gh_flux # source of energy in the ocean
 
     if compute:
         return ds_time_mean.compute()
@@ -344,11 +346,69 @@ def global_mean_ice(ds, exp, user, cart_exp = cart_exp, compute = True, grid = '
         return ds_time_mean.compute()
     else:
         return ds_time_mean
+
+
+def compute_atm_balance(ds):#, exp, user, cart_exp = cart_exp):
+    """
+    Computes net toa, net srf, atm imbalance (toa-srf)
+    """
+    if np.all([va in ds for va in 'rlut rsut rsdt'.split()]):
+        ds['toa_net'] = ds.rsdt - ds.rlut - ds.rsut
+
+    if 'rlntcs' in ds and 'rsntcs' in ds:
+        ds['crf'] =  ds.toa_net - ds.rlntcs - ds.rsntcs
+
+    if np.all([va in ds for va in 'rlns rsns hfss hfls'.split()]):
+        ds['srf_net_nosn'] = ds.rlns + ds.rsns - ds.hfss - ds.hfls
+        if 'prsn' in ds:
+            ds['srf_net'] = ds['srf_net_nosn'] - 334000.*ds.prsn
+        else:
+            print('prsn not available, computing srf_net without snow contribution.. (to avoid this, add prsn to atmvars)')
+
+    if 'toa_net' in ds:
+        if 'srf_net' in ds:
+            # compute toa-srf
+            ds['toa-srf'] = ds['toa_net'] - ds['srf_net']
+        else:
+            ds['toa-srf'] = ds['toa_net'] - ds['srf_net_nosn']
+
+        ds['atm_imb'] = -(ds['toa-srf']) # atm imbalance: positive means energy is created
+
+    if 'pr' in ds and 'evspsbl' in ds:
+        # compute pr-evap
+        ds['E-P'] = ds['evspsbl'] - ds['pr']
+
+    return ds
+
+
+def compute_interface_balance(clim_all):
+    """
+    Computes balance at interface. Requires atm, oce, ice
+    """
+    fact = 334*1000*1000/(3.1e7*4*3.14*6e6**2) # to convert sea ice formation in W/m2
+
+    if 'qt_oce' in list(clim_all['oce_mean'].items())[0][1] and 'srf_net_oce' in list(clim_all['atm_mean'].items())[0][1] and 'sivolu_N' in list(clim_all['ice_mean'].items())[0][1]:
+        for exp in clim_all['oce_clim']:
+            clim_all['oce_mean'][exp]['interface_imb'] = clim_all['atm_mean'][exp]['srf_net_oce_nosn'] - (clim_all['ice_mean'][exp]['sivolu_N']+clim_all['ice_mean'][exp]['sivolu_S']).diff('year')*fact - clim_all['oce_mean'][exp]['qt_oce']
+
+    return clim_all
+
     
-def compute_atm_clim(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None):
+def compute_atm_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None):
     ds = ds.rename({'time_counter': 'time'})
     ds = ds[atmvars].groupby('time.year').mean().compute()
     logging.debug('Atmospheric climatology computed')
+
+    ds = compute_atm_balance(ds)#, exp, user, cart_exp)
+
+    if 'srf_net' in ds:
+        # net srf over ocean and over land
+        srf_bal = dict()
+        oce_weights, land_weights = get_areas_oifs(exp, user, cart_exp=cart_exp)
+        print(ds['srf_net'].dims, oce_weights.shape)
+        srf_bal['srf_net_oce_nosn'] = np.sum(oce_weights[np.newaxis, ...]*ds['srf_net_nosn'], axis = 1)/np.sum(oce_weights)
+        srf_bal['srf_net_oce'] = np.sum(oce_weights[np.newaxis, ...]*ds['srf_net'], axis = 1)/np.sum(oce_weights)
+        srf_bal['srf_net_land'] = np.sum(land_weights[np.newaxis, ...]*ds['srf_net'], axis = 1)/np.sum(land_weights)
 
     if year_clim is None:
         logging.debug('Using last 20 years for climatology')
@@ -359,6 +419,12 @@ def compute_atm_clim(ds, exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas
         atmclim = ds.sel(year = slice(year_clim[0], year_clim[1])).mean('year')
         yclim_tag = f'_{year_clim[0]}-{year_clim[1]}'
     atmmean = global_mean(ds, compute = True)
+
+    if 'srf_net' in ds:
+        for ke in srf_bal:
+            atmmean[ke] = srf_bal[ke]
+
+        atmmean['atm_imb_bottino'] = -(atmmean['toa_net'] - atmmean['srf_net_land'] - atmmean['srf_net_oce_nosn'])
 
     if cart_out is not None:
         atmclim.to_netcdf(cart_out + f'clim_tuning_{exp}{yclim_tag}.nc')
@@ -704,7 +770,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 atmvars='rsut rlut rsdt tas pr'.split(),
                 ocevars='tos heatc qt_oce sos'.split(),
                 icevars='siconc sivolu sithic'.split(),
-                atm_only=False, year_clim=None, file_lists=None, ongoing = [], density=False):
+                atm_only=False, year_clim=None, file_lists=None, ongoing = [], density=False, do_all_from_scratch = False):
     """
     Reads outputs and computes global means.
 
@@ -806,7 +872,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     def _compute_atm(exp, us, coupled, vars=atmvars, save=True):
         ds = _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm')
-        return compute_atm_clim(ds, exp,
+        return compute_atm_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 atmvars=vars, year_clim=year_clim)
 
@@ -953,12 +1019,19 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         rho_mean_path  = cart_out + f'mean_rho_tuning_{exp}.nc'
 
         # ── per-domain actions ────────────────────────────────────────────────
-        atm_action,  atm_missing  = _needs_compute(atm_clim_path, atm_mean_path, atmvars) if not ocean_only else (False, None)
-        oce_action,  oce_missing  = _needs_compute(oce_clim_path, oce_mean_path, ocevars) if coupled        else (False, None)
-        ice_action,  ice_missing  = _needs_compute(ice_clim_path, ice_mean_path, icevars) if coupled        else (False, None)
-        amoc_action, _            = _needs_compute(amoc_2d_path,  amoc_ts_path)           if coupled        else (False, None)
-        if density:
-            rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)       if coupled        else (False, None)
+        if not do_all_from_scratch:
+            atm_action,  atm_missing  = _needs_compute(atm_clim_path, atm_mean_path, atmvars) if not ocean_only else (False, None)
+            oce_action,  oce_missing  = _needs_compute(oce_clim_path, oce_mean_path, ocevars) if coupled        else (False, None)
+            ice_action,  ice_missing  = _needs_compute(ice_clim_path, ice_mean_path, icevars) if coupled        else (False, None)
+            amoc_action, _            = _needs_compute(amoc_2d_path,  amoc_ts_path)           if coupled        else (False, None)
+            if density:
+                rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)       if coupled        else (False, None)
+        else:
+            atm_action, atm_missing = ('from_scratch', atmvars) if not ocean_only else (False, None)
+            oce_action, oce_missing = ('from_scratch', ocevars) if coupled        else (False, None)
+            ice_action, ice_missing = ('from_scratch', icevars) if coupled        else (False, None)
+            amoc_action = 'from_scratch' if coupled else False
+            if density: rho_action = 'from_scratch' if coupled else False
             
         # ── ATM ───────────────────────────────────────────────────────────────
         if not ocean_only:
@@ -973,7 +1046,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     missing=atm_missing,
                     compute_fn_missing=lambda vars: compute_atm_clim(
                         _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm'),
-                        exp, cart_out=None, atmvars=vars, year_clim=year_clim))
+                        exp, us, cart_exp=cart_exp, cart_out=None, atmvars=vars, year_clim=year_clim))
 
             elif atm_action == 'update':
                 logging.info('[atm] Updating with new data...')
@@ -983,7 +1056,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     exp, us, 'atm', clim_old, mean_old,
                     filz=filz_atm[exp],
                     compute_fn=lambda ds: compute_atm_clim(
-                        ds, exp, cart_out=None, atmvars=atmvars, year_clim=year_clim),
+                        ds, exp, us, cart_exp=cart_exp, cart_out=None, atmvars=atmvars, year_clim=year_clim),
                     clim_path=atm_clim_path, mean_path=atm_mean_path)
 
             else:  # 'from_scratch'
@@ -1106,6 +1179,8 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         if density:
             clim_all['rho_mean'] = rhomean_exp
             clim_all['rho_clim'] = rhoclim_exp
+
+        clim_all = compute_interface_balance(clim_all)
 
     return clim_all
 
@@ -1262,7 +1337,11 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
             y = y.groupby('time_counter.year').mean()
             
         y = y.squeeze()
-        if len(y.year > x.year):
+        print(exp)
+        print(x)
+        print(y)
+        #print(y.year, x.year)
+        if len(y.year) > len(x.year):
             logging.info('cutting excess data in amoc')
             y = y.sel(year = slice(x.year.min(), x.year.max()))
 
@@ -1324,7 +1403,43 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
 
     return fig
 
-def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = None, cart_out = cart_out, n_end = 20, colors = None, labels = None, colors_legend = None, lw = 0.3, alpha = 0.5, background_color = None, cmap_name = 'viridis', xlabel = '', ylabel = '', cbar_label = ''):
+
+def plot_imbalance(clim_all, cart_out = cart_out, rolling = None):
+    atmmean = create_ds_exp(clim_all['atm_mean'])
+    ocemean = create_ds_exp(clim_all['oce_mean'])
+
+    figs = []
+    fig = plot_custom_greg(atmmean['atm_imb'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'atm imbalance (>0 -> source)', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=True, y_ext = (-2.5, 2.5), x_ext = (-2.5, 2.5), rolling = rolling)
+    figs.append(fig)
+
+    fig = plot_custom_greg(atmmean['atm_imb_bottino'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'atm imbalance (>0 -> source, no prsn over ocean)', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=True, y_ext = (-2.5, 2.5), x_ext = (-2.5, 2.5), rolling = rolling)
+    figs.append(fig)
+
+    fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (-2.5, 2.5), rolling = rolling)
+    figs.append(fig)
+
+    fig = plot_custom_greg(ocemean['tos'], ocemean['oce_imb'], None, (-0.1, 0.1), xlabel = 'GTOS', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (-2.5, 2.5), rolling = rolling)
+    figs.append(fig)
+
+    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, (-0.1e-6, 0.1e-6), xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (0, 3e-6), rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, None, xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = None, rolling = rolling)
+    figs.append(fig)
+    
+    # fig = plot_custom_greg(atmmean['interface_imb'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'interface imbalance (>0 -> source)', ylabel = 'oce imbalance (>0 -> source)')
+    # figs.append(fig)
+
+    if 'interface_imb' in ocemean:
+        fig = plot_custom_greg(atmmean['tas'], ocemean['interface_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'interface imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+        figs.append(fig)
+
+    return figs
+
+
+def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = None, cart_out = cart_out, n_end = 20, colors = None, labels = None, colors_legend = None, lw = 0.3, alpha = 0.5, background_color = None, cmap_name = 'viridis', xlabel = '', ylabel = '', cbar_label = '', symmetric_axes = False, x_ext = None, y_ext = None, rolling = None):
+    """
+    x_ds, y_ds: two datasets or dicts containing all exps
+    x_target, y_target: two tuples (min, max)
+    """
 
     if isinstance(x_ds, dict):
         x_ds = xr.concat(x_ds.values(), dim=pd.Index(x_ds.keys(), name='exp'))
@@ -1333,11 +1448,18 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
 
     fig, ax = plt.subplots(figsize=(12, 8))
 
-    y_ext = (np.min(y_ds), np.max(y_ds))
-    x_ext = (np.min(x_ds), np.max(x_ds))
+    # y_ext = (np.percentile(y_ds, 5), np.percentile(y_ds, 95))
+    # x_ext = (np.percentile(x_ds, 5), np.percentile(x_ds, 95))
+    if y_ext is None: y_ext = (np.nanmin(y_ds), np.nanmax(y_ds))
+    if x_ext is None: x_ext = (np.nanmin(x_ds), np.nanmax(x_ds))
+    if symmetric_axes:
+        max_ext = 1.1*max(abs(y_ext[0]), abs(y_ext[1]), abs(x_ext[0]), abs(x_ext[1]))
+        x_ext = (-max_ext, max_ext)
+        y_ext = (-max_ext, max_ext)
+        print('ext', max_ext)
 
-    ax.fill_betweenx(np.arange(y_ext[0], y_ext[1], 0.1), x_target[0], x_target[1], color = 'grey', alpha = 0.2, edgecolor = None)
-    ax.fill_betweenx(np.arange(y_target[0], y_target[1], 0.1), x_ext[0], x_ext[1], color = 'grey', alpha = 0.2, edgecolor = None)
+    if x_target is not None: ax.fill_betweenx(np.linspace(y_ext[0], y_ext[1], 10), x_target[0], x_target[1], color = 'grey', alpha = 0.2, edgecolor = None)
+    if y_target is not None: ax.fill_betweenx(np.linspace(y_target[0], y_target[1], 10), x_ext[0], x_ext[1], color = 'grey', alpha = 0.2, edgecolor = None)
 
     if exps is None:
         exps = x_ds.exp.values
@@ -1354,17 +1476,27 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
         x = x_ds.sel(exp = exp)
         y = y_ds.sel(exp = exp)
 
-        ax.plot(x, y, label = exp, lw = lw, color = col)
-        
-        x, y = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
+        if not rolling:
+            ax.plot(x, y, label = exp, lw = lw, color = col)
+        else:
+            ax.plot(x.rolling(year = rolling, min_periods = 1).mean(), y.rolling(year = rolling, min_periods = 1).mean(), label = exp, lw = lw, color = col)
+            
+        #x, y = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
+        x, y = np.mean(x.values[-n_end:]), np.mean(y.values[-n_end:])
         ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5, zorder = 3)
+        print('scatter:', x, y)
         ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
+    ax.set_xlim(x_ext)
+    ax.set_ylim(y_ext)
+    if symmetric_axes:
+        print('Trying to set aspect equal!!')
+        ax.set_aspect('equal')
 
-    if background_color is not None:
-        ax.set_facecolor(background_color)
+    # if background_color is not None:
+    #     ax.set_facecolor(background_color)
 
     if labels is None:
         plt.legend()
@@ -1378,15 +1510,15 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
 
         ax.legend(handles=legend_elements)
 
-    # Add colorbar below the graph
-    cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), 
-                        ax=ax, orientation='vertical', pad=0.15)
-    cbar.set_label(cbar_label)
     name = '-'.join(exps)
-    fig.savefig(cart_out + f'check_{x_ds.name}_vs_{y_ds.name}_{name}.pdf')
+    try:
+        fig.savefig(cart_out + f'check_{x_ds.name}_vs_{y_ds.name}_{name}.pdf', dpi = 300)
+    except:
+        print('could not output fig!!')
+        
     plt.show()
 
-    return
+    return fig
 
 def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted = False, datadir = datadir, cart_out = cart_out, colors = None, ylim = None):
     """
@@ -1792,7 +1924,7 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
         if y_ref is not None: y = y - y_ref
 
         if rolling is not None:
-            y.rolling(year = rolling).mean().plot(label = exp, color = col, ax = ax)
+            y.rolling(year = rolling, min_periods = 1).mean().plot(label = exp, color = col, ax = ax)
         else:
             y.plot(label = exp, color = col, ax = ax)
 
@@ -1806,11 +1938,12 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
     return fig
 
 
-def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
-    fact = 334*1000*1000/(3.1e7*4*3.14*6e6**2) # to convert sea ice formation in W/m2
+# def check_energy_balance_ocean(clim_all, remove_ice_formation = False):
+    #fact = 334*1000*1000/(3.1e7*4*3.14*6e6**2) # to convert sea ice formation in W/m2
+    # sea-ice is already taken into account: qt_oce is the flux entering the LIQUID ocean
 
-    (clim_all['oce_mean'][exp]['enebal']+clim_all['ice_mean'][exp]['sivolu_N'].diff('year')*fact).rolling(year = 20).mean().plot(label = exp, color = col, ls = ':')
-    return
+    #(clim_all['oce_mean'][exp]['enebal']+clim_all['ice_mean'][exp]['sivolu_N'].diff('year')*fact).rolling(year = 20).mean().plot(label = exp, color = col, ls = ':')
+    # return
 
 # ============================================================
 # FUNCTIONS FOR PARAMETERS PLOTS
@@ -2410,7 +2543,7 @@ def return_vars(exps, user = None, vnames = None, domain=None, lat_bounds = [-90
 
                 trend[i,j], intercept[i,j], _, _, _ = stats.linregress(np.arange(0,np.shape(var.sel(exp=exps[1]))[0]), var.sel(exp=exps[1])[:,i,j])
 
-        delta = (var.sel(exp=exps[0]) - (np.arange(0,len(var.sel(exp=exps[0]))))[:, np.newaxis, np.newaxis]*trend-intercept).rolling(year=30).mean()
+        delta = (var.sel(exp=exps[0]) - (np.arange(0,len(var.sel(exp=exps[0]))))[:, np.newaxis, np.newaxis]*trend-intercept).rolling(year=30, min_periods = 1).mean()
         #delta = (var.sel(exp=exps[0]) - (np.arange(0,300))[:, np.newaxis, np.newaxis]*trend).rolling(year=30).mean()
 
     
@@ -2428,7 +2561,7 @@ def return_vars(exps, user = None, vnames = None, domain=None, lat_bounds = [-90
             ax[0].coastlines()
             ax[0].set_extent([70, 290, -30, 30], crs=ccrs.PlateCarree())
             #plt.colorbar(d, ax=ax[0])
-            omega = var.sel(exp=exps[0]).rolling(year=30).mean(dim='year')[85]
+            omega = var.sel(exp=exps[0]).rolling(year=30, min_periods = 1).mean(dim='year')[85]
             # e = ax[1].pcolormesh(lons, lats, delta.where(omega<-0.02, np.nan)[85], cmap='PuOr', transform=ccrs.PlateCarree())
             # ax[1].coastlines()
             # plt.show()
@@ -2763,14 +2896,14 @@ def check_pi_state(clim_all, exps):
 # ============================================================
 ################################################ MAIN FUNCTION ###########################
 
-def compare_multi_exps(
-        exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', 
-        imbalance = 0., ref_exp = None, atm_only = False, atmvars = 'rsut rlut rsdt tas pr'.split(), 
-        ocevars = 'tos heatc qt_oce sos mldr10_1 zos'.split(), icevars = 'siconc sivolu sithic'.split(), year_clim = None, 
-        plot_diffref=False, plot_param=False, param_map={}, skip_first_year=False, exp_type = 'PD', 
-        density=False, colors=None, rolling = None, file_lists = None, plot_zonal_vars = [], ongoing = [],
-        loglevel=logging.INFO
-        ):
+def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', 
+                       imbalance = 0., ref_exp = None, atm_only = False, 
+                       atmvars = 'rsut rlut rsdt tas pr alb rsntcs rlntcs hfss hfls rsns rlns prsn ps evspsbl'.split(), 
+                       ocevars = 'tos heatc qt_oce sos mldr10_1'.split(), 
+                       icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, 
+                       param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, 
+                       rolling = None, file_lists = None, plot_zonal_vars = None, ongoing = [], do_all_from_scratch = False,
+                       loglevel=logging.INFO):
     """
     Runs all multi-exps diagnostics.
 
@@ -2786,6 +2919,9 @@ def compare_multi_exps(
     
     if not os.path.exists(cart_out): os.mkdir(cart_out)
 
+    if plot_zonal_vars is None:
+        plot_zonal_vars = atmvars
+
     cart_out_nc = cart_out + '/exps_clim/'
     cart_out_figs = cart_out + f"/check_{'-'.join(exps)}/"
 
@@ -2793,7 +2929,7 @@ def compare_multi_exps(
     if not os.path.exists(cart_out_figs): os.mkdir(cart_out_figs)
 
     ### read outputs for all exps
-    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density, file_lists = file_lists, ongoing = ongoing)
+    clim_all = read_output(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out_nc, atm_only = atm_only, atmvars = atmvars, ocevars = ocevars, icevars = icevars, year_clim = year_clim, density=density, file_lists = file_lists, ongoing = ongoing, do_all_from_scratch=do_all_from_scratch)
 
     coupled = False
     if 'amoc_ts' in clim_all: coupled = True
@@ -2801,12 +2937,12 @@ def compare_multi_exps(
     #check_pi_state(clim_all, exps)
     allfigs = []
     ### Gregory and amoc gregory
-    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors)
+    fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors, rolling = rolling)
     allfigs = [fig_greg]
 
     if coupled:
         if clim_all['amoc_ts'] is not None:
-            fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors)
+            fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors, rolling = rolling)
             allfigs.append(fig_amoc_greg)
 
             fig_amoc_all = plot_amoc_2d_all(clim_all['amoc_mean'], exps, cart_out = cart_out_figs)
@@ -2831,17 +2967,33 @@ def compare_multi_exps(
                 fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
                 allfigs.append(fig)
 
+    if 'atm_imb' in list(clim_all['atm_mean'].items())[0][1]:
+        fig_enebal = plot_var_ts(clim_all, 'atm', 'atm_imb', cart_out = cart_out_figs, rolling=rolling)
+        allfigs.append(fig_enebal)
+    else:
+        print('ATM IMBALANCE NOT COMPUTED')
+
+    if 'E-P' in list(clim_all['atm_mean'].items())[0][1]:
+        fig = plot_var_ts(clim_all, 'atm', 'E-P', cart_out = cart_out_figs, rolling=rolling)
+        allfigs.append(fig)
+    else:
+        print('E-P NOT COMPUTED')
+
     ###### CAN ADD NEW DIAGS HERE
     if coupled:
         for var in ocevars:
             fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
-        try:
-            fig_enebal = plot_var_ts(clim_all, 'oce', 'enebal', cart_out = cart_out_figs, rolling=rolling)
+        if 'oce_imb' in list(clim_all['oce_mean'].items())[0][1]:
+            fig_enebal = plot_var_ts(clim_all, 'oce', 'oce_imb', cart_out = cart_out_figs, rolling=rolling)
             allfigs.append(fig_enebal)
-        except:
-            logging.info('could not plot enebal')
+
+            if 'atm_imb' in list(clim_all['atm_mean'].items())[0][1]:
+                figs = plot_imbalance(clim_all, cart_out = cart_out, rolling = rolling)
+                allfigs.append(figs)
+        else:
+            print('OCE IMBALANCE NOT COMPUTED')
         
         for var in icevars:
             for emi in ['N', 'S']:
@@ -2891,6 +3043,9 @@ def compare_multi_exps(
         allfigs += figs_param
 
     logging.info(f'Done! Check results in {cart_out_figs}')
+
+    # for ke in clim_all:
+    #     clim_all[ke] = create_ds_exp(clim_all[ke])
 
     return clim_all, allfigs
 

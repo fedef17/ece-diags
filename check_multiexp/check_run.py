@@ -363,7 +363,7 @@ def compute_atm_balance(ds):#, exp, user, cart_exp = cart_exp):
         if 'prsn' in ds:
             ds['srf_net'] = ds['srf_net_nosn'] - 334000.*ds.prsn
         else:
-            print('prsn not available, computing srf_net without snow contribution.. (to avoid this, add prsn to atmvars)')
+            logging.warning('prsn not available, computing srf_net without snow contribution.. (to avoid this, add prsn to atmvars)')
 
     if 'toa_net' in ds:
         if 'srf_net' in ds:
@@ -405,7 +405,7 @@ def compute_atm_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, at
         # net srf over ocean and over land
         srf_bal = dict()
         oce_weights, land_weights = get_areas_oifs(exp, user, cart_exp=cart_exp)
-        print(ds['srf_net'].dims, oce_weights.shape)
+        logging.debug(f"Shape of srf_net: {ds['srf_net'].dims}, Shape of oce_weights: {oce_weights.shape}")
         srf_bal['srf_net_oce_nosn'] = np.sum(oce_weights[np.newaxis, ...]*ds['srf_net_nosn'], axis = 1)/np.sum(oce_weights)
         srf_bal['srf_net_oce'] = np.sum(oce_weights[np.newaxis, ...]*ds['srf_net'], axis = 1)/np.sum(oce_weights)
         srf_bal['srf_net_land'] = np.sum(land_weights[np.newaxis, ...]*ds['srf_net'], axis = 1)/np.sum(land_weights)
@@ -1196,7 +1196,7 @@ def create_ds_exp(exp_dict):
     else:
         okdict = exp_dict
 
-    x_ds = xr.concat(okdict.values(), dim=pd.Index(okdict.keys(), name='exp'))
+    x_ds = xr.concat(okdict.values(), dim=pd.Index(okdict.keys(), name='exp'), join='outer')
     return x_ds
 
 
@@ -1337,10 +1337,7 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
             y = y.groupby('time_counter.year').mean()
             
         y = y.squeeze()
-        print(exp)
-        print(x)
-        print(y)
-        #print(y.year, x.year)
+        logging.debug(f'Exp: {exp}: After processing, AMOC shape: {y.shape}, GTAS shape: {x.shape}')
         if len(y.year) > len(x.year):
             logging.info('cutting excess data in amoc')
             y = y.sel(year = slice(x.year.min(), x.year.max()))
@@ -1456,7 +1453,7 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
         max_ext = 1.1*max(abs(y_ext[0]), abs(y_ext[1]), abs(x_ext[0]), abs(x_ext[1]))
         x_ext = (-max_ext, max_ext)
         y_ext = (-max_ext, max_ext)
-        print('ext', max_ext)
+        logging.debug(f'ext: {max_ext}')
 
     if x_target is not None: ax.fill_betweenx(np.linspace(y_ext[0], y_ext[1], 10), x_target[0], x_target[1], color = 'grey', alpha = 0.2, edgecolor = None)
     if y_target is not None: ax.fill_betweenx(np.linspace(y_target[0], y_target[1], 10), x_ext[0], x_ext[1], color = 'grey', alpha = 0.2, edgecolor = None)
@@ -1484,7 +1481,7 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
         #x, y = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
         x, y = np.mean(x.values[-n_end:]), np.mean(y.values[-n_end:])
         ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5, zorder = 3)
-        print('scatter:', x, y)
+        logging.debug(f'scatter: {x}, {y}')
         ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
 
     ax.set_xlabel(xlabel)
@@ -1492,7 +1489,7 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
     ax.set_xlim(x_ext)
     ax.set_ylim(y_ext)
     if symmetric_axes:
-        print('Trying to set aspect equal!!')
+        logging.debug('Trying to set aspect equal!!')
         ax.set_aspect('equal')
 
     # if background_color is not None:
@@ -1514,7 +1511,7 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
     try:
         fig.savefig(cart_out + f'check_{x_ds.name}_vs_{y_ds.name}_{name}.pdf', dpi = 300)
     except:
-        print('could not output fig!!')
+        logging.error('could not output fig!!')
         
     plt.show()
 
@@ -1577,6 +1574,7 @@ def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted =
         if weighted: add += '_weighted'
 
         name = '-'.join(exps)
+        logging.info(f'Saving figure: {name}{add}')
         fig.savefig(cart_out + f'check_radiation_vs_ceres_{name}{add}.pdf')
         figs.append(fig)
 
@@ -2899,7 +2897,7 @@ def check_pi_state(clim_all, exps):
 def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/scratch/{}/ece4/', cart_out = './output/', 
                        imbalance = 0., ref_exp = None, atm_only = False, 
                        atmvars = 'rsut rlut rsdt tas pr alb rsntcs rlntcs hfss hfls rsns rlns prsn ps evspsbl'.split(), 
-                       ocevars = 'tos heatc qt_oce sos mldr10_1'.split(), 
+                       ocevars = 'tos zos heatc qt_oce sos mldr10_1'.split(), 
                        icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, 
                        param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, 
                        rolling = None, file_lists = None, plot_zonal_vars = None, ongoing = [], do_all_from_scratch = False,
@@ -2971,13 +2969,13 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
         fig_enebal = plot_var_ts(clim_all, 'atm', 'atm_imb', cart_out = cart_out_figs, rolling=rolling)
         allfigs.append(fig_enebal)
     else:
-        print('ATM IMBALANCE NOT COMPUTED')
+        logging.warning('ATM IMBALANCE NOT COMPUTED')
 
     if 'E-P' in list(clim_all['atm_mean'].items())[0][1]:
         fig = plot_var_ts(clim_all, 'atm', 'E-P', cart_out = cart_out_figs, rolling=rolling)
         allfigs.append(fig)
     else:
-        print('E-P NOT COMPUTED')
+        logging.warning('E-P NOT COMPUTED')
 
     ###### CAN ADD NEW DIAGS HERE
     if coupled:
@@ -2993,7 +2991,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                 figs = plot_imbalance(clim_all, cart_out = cart_out, rolling = rolling)
                 allfigs.append(figs)
         else:
-            print('OCE IMBALANCE NOT COMPUTED')
+            logging.warning('OCE IMBALANCE NOT COMPUTED')
         
         for var in icevars:
             for emi in ['N', 'S']:
@@ -3087,6 +3085,7 @@ def main(config_path = None):
         user = os.getenv('USER')
     
     # Example: logging.info loaded configuration
+    logging.info(f"Loaded configuration for user: {user}")
     logging.info(f"Experiments: {exps}")
     logging.info(f"User: {user}")
     logging.info(f"Read again: {read_again}")

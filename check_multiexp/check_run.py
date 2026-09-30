@@ -26,6 +26,7 @@ import yaml
 import argparse
 
 import logging
+from smmregrid import Regridder, CdoGenerate
 
 logger = logging.getLogger(__name__) 
 
@@ -810,8 +811,25 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp], filz_rho[exp] = file_list(exp, us, cart_exp = cart_exp, density=True)
             else:
                 filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = remove_last_year)
-                
+
     # ── helpers ───────────────────────────────────────────────────────────────
+    def _smmregrid_area_weights(filelist, exp, target_grid='r180x90', method="ycon"):
+        logging.info(f'Computing regridding weights and areas for {exp} to {target_grid}')
+        basefile = glob.glob(filelist[exp])[0]
+        logging.info(f'  → base file: {basefile}')
+        generator = CdoGenerate(source_grid=basefile, target_grid=target_grid)
+        areas = None
+        weights = None
+        try: 
+            weights = generator.weights(method=method)
+        except Exception as e:
+            logging.error(f'Error while computing weights for {exp}: {e}')
+        try:
+            areas = generator.areas()
+        except Exception as e:
+            logging.error(f'Error while computing areas for {exp}: {e}')
+
+        return weights, areas
 
     def _files_exist(pattern_or_list):
         if isinstance(pattern_or_list, str):
@@ -967,6 +985,8 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
 
     # ── output containers ─────────────────────────────────────────────────────
 
+    atmweights_exp = dict()
+    atmareas_exp = dict()
     atmmean_exp   = dict()
     atmclim_exp   = dict()
     oceclim_exp   = dict()
@@ -1062,6 +1082,9 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             else:  # 'from_scratch'
                 logging.info('[atm] Computing from scratch...')
                 atmclim_exp[exp], atmmean_exp[exp] = _compute_atm(exp, us, coupled)
+
+            # add weights and areas for smm regridding (from original file, all grids the same)
+            atmweights_exp[exp], atmareas_exp[exp] = _smmregrid_area_weights(filz_atm, exp)
 
         # ── OCE ───────────────────────────────────────────────────────────────
         if coupled:
@@ -1176,6 +1199,8 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         clim_all['ice_mean']  = icemean_exp
         clim_all['amoc_mean'] = amoc_mean_exp
         clim_all['amoc_ts'] = amoc_ts_exp
+        clim_all['atm_weights'] = atmweights_exp
+        clim_all['atm_areas'] = atmareas_exp
         if density:
             clim_all['rho_mean'] = rhomean_exp
             clim_all['rho_clim'] = rhoclim_exp

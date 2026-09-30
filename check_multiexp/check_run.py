@@ -814,10 +814,10 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     # ── helpers ───────────────────────────────────────────────────────────────
     def _smmregrid_area_weights(filelist, exp, target_grid='r180x90', method="ycon"):
         logging.info(f'Computing regridding weights and areas for {exp} to {target_grid}')
-        logging.info(f'  → method: {method}')
-        logging.info(f'  → source grid: {filelist}')
+        logging.debug(f'  → method: {method}')
+        logging.debug(f'  → source grid: {filelist}')
         basefile = glob.glob(filelist[exp])[0]
-        logging.info(f'  → base file: {basefile}')
+        logging.debug(f'  → base file: {basefile}')
         generator = CdoGenerate(source_grid=basefile, target_grid=target_grid)
         areas = None
         weights = None

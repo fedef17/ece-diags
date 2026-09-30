@@ -387,10 +387,13 @@ def compute_atm_balance(ds):#, exp, user, cart_exp = cart_exp):
         if 'srf_net' in ds:
             # compute toa-srf
             ds['toa-srf'] = ds['toa_net'] - ds['srf_net']
-        else:
+        elif 'srf_net_nosn' in ds:
             ds['toa-srf'] = ds['toa_net'] - ds['srf_net_nosn']
+        else:
+            pass
 
-        ds['atm_imb'] = -(ds['toa-srf']) # atm imbalance: positive means energy is created
+        if 'toa-srf' in ds:
+            ds['atm_imb'] = -(ds['toa-srf']) # atm imbalance: positive means energy is created
 
     if 'pr' in ds and 'evspsbl' in ds:
         # compute pr-evap
@@ -1298,7 +1301,7 @@ def plot_amoc_ts(amoc_max, exp, ylim = (5, 20), ax = None, color = None, text_xs
     return ax
 
 
-def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 20, imbalance = -0.9, ylim = None, colors = None, year_clim = None, rolling = None, s_dot = 1000, labels = True):
+def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 20, imbalance = 0., ylim = None, colors = None, year_clim = None, rolling = None, s_dot = 1000, labels = True):
     """
     gregory plot
     """
@@ -1387,6 +1390,7 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
         if exp not in clim_all['amoc_ts']: 
             logging.info(f'AMOC not computed for {exp}')
             continue
+
         if isinstance(clim_all['amoc_ts'][exp], xr.DataArray):
             y = clim_all['amoc_ts'][exp]
         else:
@@ -1475,10 +1479,15 @@ def plot_imbalance(clim_all, cart_out = cart_out, rolling = None):
     fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (-2.5, 2.5), rolling = rolling)
     figs.append(fig)
 
+    fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb_bottino'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (-2.5, 2.5), rolling = rolling)
+    figs.append(fig)    
+
     fig = plot_custom_greg(ocemean['tos'], ocemean['oce_imb'], None, (-0.1, 0.1), xlabel = 'GTOS', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (-2.5, 2.5), rolling = rolling)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, (-0.1e-6, 0.1e-6), xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = None, rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], 2.5e6*atmmean['E-P'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'E-P energy flux [W/m2] (>0 -> energy needed for sustaining the E-P imbalance)', cart_out = cart_out, symmetric_axes=False, y_ext = (0, 5), rolling = rolling)
+    figs.append(fig)
+
     fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, None, xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = None, rolling = rolling)
     figs.append(fig)
     

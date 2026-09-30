@@ -1,5 +1,3 @@
-from math import exp
-
 import xarray as xr
 from matplotlib import pyplot as plt
 import numpy as np
@@ -11,7 +9,6 @@ import pandas as pd
 
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
-from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 import glob
 # import cmocean as cmo
@@ -1792,7 +1789,7 @@ def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None
     return fig
 
 def plot_map_var(clim, weights, exps, var, ref_exp = None, cart_out = cart_out, last_years = None,
-                  ncols = 3, projection = ccrs.Robinson(), cmap = None, nlevels = 11,
+                  ncols = 3, projection = ccrs.Robinson(), cmap = None, nlevels = 10,
                   vmax = None, cbar_label = ''):
     """
     Multi-panel lat-lon contourf maps with coastlines, one panel per exp.
@@ -2997,7 +2994,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                        ocevars = 'tos zos heatc qt_oce sos mldr10_1'.split(), 
                        icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, 
                        param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, 
-                       rolling = None, file_lists = None, plot_zonal_vars = None, plot_map_atm_vars = ['tas', 'alb'], ongoing = [], do_all_from_scratch = False,
+                       rolling = None, file_lists = None, plot_zonal_vars = None, plot_map_atm_vars = ['alb', 'tas', 'pr'], ongoing = [], do_all_from_scratch = False,
                        loglevel=logging.INFO):
     """
     Runs all multi-exps diagnostics.
@@ -3058,19 +3055,22 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     
     for var in atmvars:
         if var not in 'rsut rlut rsdt tas'.split():
+            logging.info(f'Plotting time series for {var}')
             fig = plot_var_ts(clim_all, 'atm', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
             if var in plot_zonal_vars:
+                logging.info(f'Plotting zonal for {var}')
                 fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
                 allfigs.append(fig)
 
-            # your example, generalized: several exps vs xa08
-            if var in plot_map_atm_vars:
-                fig = plot_map_var(clim=clim_all['atm_clim'], weights=clim_all['atm_weights'], 
-                                   exps=exps, var=var, ref_exp = ref_exp, 
-                                   cbar_label = f'Delta {var}')
-                allfigs.append(fig)
+        # your example, generalized: several exps vs xa08
+        if var in plot_map_atm_vars:
+            logging.info(f'Plotting map for {var}')
+            fig = plot_map_var(clim=clim_all['atm_clim'], weights=clim_all['atm_weights'], 
+                                exps=exps, var=var, ref_exp = ref_exp, 
+                                cbar_label = f'Delta {var}')
+            allfigs.append(fig)
 
     if 'atm_imb' in list(clim_all['atm_mean'].items())[0][1]:
         fig_enebal = plot_var_ts(clim_all, 'atm', 'atm_imb', cart_out = cart_out_figs, rolling=rolling)

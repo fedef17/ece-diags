@@ -814,6 +814,8 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     # ── helpers ───────────────────────────────────────────────────────────────
     def _smmregrid_area_weights(filelist, exp, target_grid='r180x90', method="ycon"):
         logging.info(f'Computing regridding weights and areas for {exp} to {target_grid}')
+        logging.info(f'  → method: {method}')
+        logging.info(f'  → source grid: {filelist}')
         basefile = glob.glob(filelist[exp])[0]
         logging.info(f'  → base file: {basefile}')
         generator = CdoGenerate(source_grid=basefile, target_grid=target_grid)
@@ -982,10 +984,16 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         mean_merged.to_netcdf(mean_path)
         return clim_merged, mean_merged
 
-    # ── output containers ─────────────────────────────────────────────────────
+    # ── weights and areas containers ─────────────────────────────────────────────────────
 
     atmweights_exp = dict()
     atmareas_exp = dict()
+    oceweights_exp = dict()
+    oceareas_exp = dict()
+    iceweights_exp = dict()
+    iceareas_exp = dict()
+
+    # ── output containers for climatologies ─────────────────────────────────────
     atmmean_exp   = dict()
     atmclim_exp   = dict()
     oceclim_exp   = dict()
@@ -1121,6 +1129,9 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 logging.info('[oce] Computing from scratch...')
                 oceclim_exp[exp], ocemean_exp[exp] = _compute_oce(exp, us)
 
+            # add weights and areas for smm regridding (from original file, all grids the same)
+            oceweights_exp[exp], oceareas_exp[exp] = _smmregrid_area_weights(filz_nemo, exp, method="bil")
+
             # ── ICE ───────────────────────────────────────────────────────────
             if not ice_action:
                 logging.info('[ice] Already computed, reading...')
@@ -1151,7 +1162,10 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             else:  # 'from_scratch'
                 logging.info('[ice] Computing from scratch...')
                 iceclim_exp[exp], icemean_exp[exp] = _compute_ice(exp, us)
-            
+
+            # add weights and areas for smm regridding (from original file, all grids the same)
+            iceweights_exp[exp], iceareas_exp[exp] = _smmregrid_area_weights(filz_ice, exp, method="bil")
+
             ## density
             if density:
                 if not rho_action:
@@ -1200,6 +1214,10 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         clim_all['amoc_ts'] = amoc_ts_exp
         clim_all['atm_weights'] = atmweights_exp
         clim_all['atm_areas'] = atmareas_exp
+        clim_all['oce_weights'] = oceweights_exp
+        clim_all['oce_areas'] = oceareas_exp
+        clim_all['ice_weights'] = iceweights_exp
+        clim_all['ice_areas'] = iceareas_exp
         if density:
             clim_all['rho_mean'] = rhomean_exp
             clim_all['rho_clim'] = rhoclim_exp
@@ -2994,7 +3012,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                        ocevars = 'tos zos heatc qt_oce sos mldr10_1'.split(), 
                        icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, 
                        param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, 
-                       rolling = None, file_lists = None, plot_zonal_vars = None, plot_map_atm_vars = ['alb', 'tas', 'pr'], ongoing = [], do_all_from_scratch = False,
+                       rolling = None, file_lists = None, plot_zonal_vars = None, plot_map_atm_vars = ['alb', 'tas', 'pr'],
+                       plot_map_oce_vars = ['tos', 'zos', 'sos'], plot_map_ice_vars = ['siconc', 'sithic'],
+                       ongoing = [], do_all_from_scratch = False,
                        loglevel=logging.INFO):
     """
     Runs all multi-exps diagnostics.
@@ -3016,6 +3036,12 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 
     if plot_map_atm_vars is None:
         plot_map_atm_vars = atmvars
+
+    if plot_map_oce_vars is None:
+        plot_map_oce_vars = ocevars
+    
+    if plot_map_ice_vars is None:
+        plot_map_ice_vars = icevars
 
     cart_out_nc = cart_out + '/exps_clim/'
     cart_out_figs = cart_out + f"/check_{'-'.join(exps)}/"
@@ -3090,6 +3116,14 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
             allfigs.append(fig)
 
+            # your example, generalized: several exps vs xa08
+            if var in plot_map_oce_vars:
+                logging.info(f'Plotting map for {var}')
+                fig = plot_map_var(clim=clim_all['oce_clim'], weights=clim_all['oce_weights'], 
+                                    exps=exps, var=var, ref_exp = ref_exp, 
+                                    cbar_label = f'Delta {var}')
+                allfigs.append(fig)
+
         if 'oce_imb' in list(clim_all['oce_mean'].items())[0][1]:
             fig_enebal = plot_var_ts(clim_all, 'oce', 'oce_imb', cart_out = cart_out_figs, rolling=rolling)
             allfigs.append(fig_enebal)
@@ -3102,7 +3136,15 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
         
         for var in icevars:
             for emi in ['N', 'S']:
+                # your example, generalized: several exps vs xa08
                 fig = plot_var_ts(clim_all, 'ice', var+f'_{emi}', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+                allfigs.append(fig)
+
+            if var in plot_map_ice_vars:
+                logging.info(f'Plotting map for {var}')
+                fig = plot_map_var(clim=clim_all['ice_clim'], weights=clim_all['ice_weights'], 
+                                    exps=exps, var=var, ref_exp = ref_exp, 
+                                    cbar_label = f'Delta {var}')
                 allfigs.append(fig)
 
     # MAPS

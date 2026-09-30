@@ -2,6 +2,7 @@ import xarray as xr
 from matplotlib import pyplot as plt
 import numpy as np
 import os
+import io
 import pandas as pd
 # import xmca
 # from xmca.array import MCA  # numpy
@@ -17,6 +18,7 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.util import add_cyclic_point
 import matplotlib.gridspec as gridspec # GRIDSPEC !
+import matplotlib.ticker as mticker
 # import statsmodels.api as sm
 # from statsmodels.regression.rolling import RollingOLS
 #import xesmf as xe
@@ -30,6 +32,22 @@ from smmregrid import Regridder, CdoGenerate
 logger = logging.getLogger(__name__) 
 
 ########################################################################################
+
+def _debug_check(fig_or_figs, label):
+    """DEBUG AID: force-render figure(s) right away so the log pinpoints which
+    plot call raises 'Image size ... too large' (remove once the cause is found)."""
+    figs = fig_or_figs if isinstance(fig_or_figs, (list, tuple)) else [fig_or_figs]
+    for i, fig in enumerate(figs):
+        if fig is None:
+            continue
+        tag = label if len(figs) == 1 else f'{label}[{i}]'
+        try:
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight')
+            logging.info(f'[DEBUG-PLOT] ok: {tag} (figsize={fig.get_size_inches()}, dpi={fig.dpi})')
+        except Exception as e:
+            logging.error(f'[DEBUG-PLOT] CRASHED: {tag} -> {e}')
+            raise
 
 datadir = '../data/'
 cart_out = './output/'
@@ -1460,7 +1478,7 @@ def plot_imbalance(clim_all, cart_out = cart_out, rolling = None):
     fig = plot_custom_greg(ocemean['tos'], ocemean['oce_imb'], None, (-0.1, 0.1), xlabel = 'GTOS', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (-2.5, 2.5), rolling = rolling)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, (-0.1e-6, 0.1e-6), xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = (0, 3e-6), rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, (-0.1e-6, 0.1e-6), xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = None, rolling = rolling)
     fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, None, xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, y_ext = None, rolling = rolling)
     figs.append(fig)
     
@@ -1524,7 +1542,7 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
         x, y = np.mean(x.values[-n_end:]), np.mean(y.values[-n_end:])
         ax.scatter(x, y, s = 1000, color = col, marker = 'o', edgecolors = col, alpha = 0.5, zorder = 3)
         logging.debug(f'scatter: {x}, {y}')
-        ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
+        #ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -1862,6 +1880,11 @@ def plot_map_var(clim, weights, exps, var, ref_exp = None, cart_out = cart_out, 
         ax.set_global()
         ax.set_title(f'{var}: {exp}' if ref_exp is None else f'{var}: {exp} - {ref_exp}')
 
+        ax.gridlines(crs = ccrs.PlateCarree(), draw_labels = False,
+            linewidth = 0.5, color = 'gray', alpha = 0.5, linestyle = '--',
+            xlocs = mticker.FixedLocator(np.arange(-180, 181, 30)),
+            ylocs = mticker.FixedLocator(np.arange(-90, 91, 30)))
+
     # hide unused panels
     for ax in axes.flat[len(plot_exps):]:
         ax.set_visible(False)
@@ -1921,7 +1944,6 @@ def plot_zonal_tas_vs_ref(atmclim, exps, ref_exp = None, cart_out = cart_out, co
         if y_ref is not None: y = y - y_ref
 
         plt.plot(atmclim.lat, y, label = exp, color = col)
-
         plt.text(100, y.values[-1], exp, fontsize=12, ha='right', color = col)
         
     ax.axhline(0., color = 'grey')
@@ -1966,7 +1988,6 @@ def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out, colo
         if y_ref is not None: y = y - y_ref
 
         plt.plot(atmclim.lat, y, label = exp, color = col)
-
         plt.text(100, y.values[-1], exp, fontsize=12, ha='right', color = col)
         
     ax.axhline(0., color = 'grey')
@@ -3059,35 +3080,43 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     allfigs = []
     ### Gregory and amoc gregory
     fig_greg = plot_greg(clim_all['atm_mean'], exps, imbalance = imbalance, ylim = None, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors, rolling = rolling)
+    #_debug_check(fig_greg, 'greg')
     allfigs = [fig_greg]
 
     if coupled:
         if clim_all['amoc_ts'] is not None:
             fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors, rolling = rolling)
+            #_debug_check(fig_amoc_greg, 'amoc_vs_gtas')
             allfigs.append(fig_amoc_greg)
 
             fig_amoc_all = plot_amoc_2d_all(clim_all['amoc_mean'], exps, cart_out = cart_out_figs)
+            #_debug_check(fig_amoc_all, 'amoc_2d_all')
             allfigs.append(fig_amoc_all)
 
             fig_amoc_ts = plot_var_ts(clim_all, 'amoc', 'amoc', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+            #_debug_check(fig_amoc_ts, 'amoc_ts')
             allfigs.append(fig_amoc_ts)
 
     # Atm fluxes and zonal tas
     figs_rad = plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs, colors = colors)
+    #_debug_check(figs_rad, 'zonal_fluxes_vs_ceres')
     allfigs += figs_rad
 
     fig_tas = plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp, cart_out = cart_out_figs, colors = colors)
+    #_debug_check(fig_tas, 'zonal_tas_vs_ref')
     allfigs.append(fig_tas)
     
     for var in atmvars:
         if var not in 'rsut rlut rsdt tas'.split():
             logging.info(f'Plotting time series for {var}')
             fig = plot_var_ts(clim_all, 'atm', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
+            #_debug_check(fig, f'atm_ts_{var}')
             allfigs.append(fig)
 
             if var in plot_zonal_vars:
                 logging.info(f'Plotting zonal for {var}')
                 fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
+                #_debug_check(fig, f'zonal_{var}')
                 allfigs.append(fig)
 
         # your example, generalized: several exps vs xa08
@@ -3096,16 +3125,19 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             fig = plot_map_var(clim=clim_all['atm_clim'], weights=clim_all['atm_weights'], 
                                 exps=exps, var=var, ref_exp = ref_exp, 
                                 cbar_label = f'Delta {var}')
+            #_debug_check(fig, f'map_atm_{var}')
             allfigs.append(fig)
 
     if 'atm_imb' in list(clim_all['atm_mean'].items())[0][1]:
         fig_enebal = plot_var_ts(clim_all, 'atm', 'atm_imb', cart_out = cart_out_figs, rolling=rolling)
+        #_debug_check(fig_enebal, 'atm_imb_ts')
         allfigs.append(fig_enebal)
     else:
         logging.warning('ATM IMBALANCE NOT COMPUTED')
 
     if 'E-P' in list(clim_all['atm_mean'].items())[0][1]:
         fig = plot_var_ts(clim_all, 'atm', 'E-P', cart_out = cart_out_figs, rolling=rolling)
+        #_debug_check(fig, 'E-P_ts')
         allfigs.append(fig)
     else:
         logging.warning('E-P NOT COMPUTED')
@@ -3114,6 +3146,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     if coupled:
         for var in ocevars:
             fig = plot_var_ts(clim_all, 'oce', var, cart_out = cart_out_figs, rolling=rolling, colors=colors)
+            #_debug_check(fig, f'oce_ts_{var}')
             allfigs.append(fig)
 
             # your example, generalized: several exps vs xa08
@@ -3122,14 +3155,17 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                 fig = plot_map_var(clim=clim_all['oce_clim'], weights=clim_all['oce_weights'], 
                                     exps=exps, var=var, ref_exp = ref_exp, 
                                     cbar_label = f'Delta {var}')
+                #_debug_check(fig, f'map_oce_{var}')
                 allfigs.append(fig)
 
         if 'oce_imb' in list(clim_all['oce_mean'].items())[0][1]:
             fig_enebal = plot_var_ts(clim_all, 'oce', 'oce_imb', cart_out = cart_out_figs, rolling=rolling)
+            #_debug_check(fig_enebal, 'oce_imb_ts')
             allfigs.append(fig_enebal)
 
             if 'atm_imb' in list(clim_all['atm_mean'].items())[0][1]:
                 figs = plot_imbalance(clim_all, cart_out = cart_out, rolling = rolling)
+                #_debug_check(figs, 'imbalance')
                 allfigs.append(figs)
         else:
             logging.warning('OCE IMBALANCE NOT COMPUTED')
@@ -3138,6 +3174,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             for emi in ['N', 'S']:
                 # your example, generalized: several exps vs xa08
                 fig = plot_var_ts(clim_all, 'ice', var+f'_{emi}', cart_out = cart_out_figs, rolling=rolling, colors=colors)
+                #_debug_check(fig, f'ice_ts_{var}_{emi}')
                 allfigs.append(fig)
 
             if var in plot_map_ice_vars:
@@ -3145,6 +3182,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                 fig = plot_map_var(clim=clim_all['ice_clim'], weights=clim_all['ice_weights'], 
                                     exps=exps, var=var, ref_exp = ref_exp, 
                                     cbar_label = f'Delta {var}')
+                #_debug_check(fig, f'map_ice_{var}')
                 allfigs.append(fig)
 
     # MAPS
@@ -3169,6 +3207,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     # --- Optional diagnostics for tuning experiments
     if plot_diffref:
         figs_diffref = plot_zonal_fluxes_vs_ref(clim_all['atm_clim'], exps=exps, ref_exp=ref_exp, cart_out=cart_out_figs)
+        _debug_check(figs_diffref, 'zonal_fluxes_vs_ref')
         allfigs += figs_diffref
 
     if plot_param:
@@ -3187,6 +3226,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
             plot_anomalies=True,
             weighted=False
         )
+        _debug_check(figs_param, 'zonal_fluxes_by_param')
         allfigs += figs_param
 
     logging.info(f'Done! Check results in {cart_out_figs}')

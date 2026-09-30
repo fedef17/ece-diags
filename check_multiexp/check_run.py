@@ -17,6 +17,8 @@ import glob
 # import cmocean as cmo
 from scipy import stats
 import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from cartopy.util import add_cyclic_point
 import matplotlib.gridspec as gridspec # GRIDSPEC !
 # import statsmodels.api as sm
 # from statsmodels.regression.rolling import RollingOLS
@@ -821,11 +823,11 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         areas = None
         weights = None
         try: 
-            weights = generator.weights(method=method)
+            weights = generator.weights(method=method).load()
         except Exception as e:
             logging.error(f'Error while computing weights for {exp}: {e}')
         try:
-            areas = generator.areas()
+            areas = generator.areas().load()
         except Exception as e:
             logging.error(f'Error while computing areas for {exp}: {e}')
 
@@ -1788,6 +1790,76 @@ def plot_map_ocean(oce_clim, exps, var, ref_exp = None, vmin = None, vmax = None
     plt.tight_layout()
     
     return fig
+
+def plot_map_var(clim, weights, exps, var, ref_exp = None, cart_out = cart_out, last_years = None,
+                  ncols = 3, projection = ccrs.Robinson(), cmap = None, nlevels = 11,
+                  vmax = None, cbar_label = ''):
+    """
+    Multi-panel lat-lon contourf maps with coastlines, one panel per exp.
+    If ref_exp is given, plots (exp - ref_exp) for all the other exps, otherwise absolute values.
+    If the data has a 'year' dim, only the last `last_years` years are averaged.
+    """
+    def get_field(exp):
+        da = clim[exp][var]
+        if 'year' in da.dims:
+            if last_years is not None:
+                da = da.isel(year = slice(-last_years, None))
+            da = da.mean('year')
+        regrid = Regridder(weights = weights[exp])
+        return regrid.regrid(da)
+
+    if ref_exp is not None and ref_exp not in exps:
+        logging.info(f'WARNING: {ref_exp} not in exps! plotting absolute values')
+        ref_exp = None
+
+    plot_exps = [e for e in exps if e != ref_exp] if ref_exp is not None else list(exps)
+
+    fields = {e: get_field(e) for e in plot_exps}
+    if ref_exp is not None:
+        ref = get_field(ref_exp)
+        fields = {e: f - ref for e, f in fields.items()}
+
+    # shared colour scale: symmetric for differences, min/max for absolute values
+    if ref_exp is not None:
+        if vmax is None:
+            vmax = max(float(np.nanpercentile(np.abs(f.values), 98)) for f in fields.values())
+        levels = np.linspace(-vmax, vmax, nlevels)
+        cmap = cmap or 'RdBu_r'
+    else:
+        vmin_ = min(float(np.nanmin(f.values)) for f in fields.values())
+        vmax_ = max(float(np.nanmax(f.values)) for f in fields.values())
+        levels = np.linspace(vmin_, vmax_, nlevels)
+        cmap = cmap or 'viridis'
+
+    ncols = min(ncols, len(plot_exps))
+    nrows = int(np.ceil(len(plot_exps) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize = (6*ncols, 3.5*nrows + 1),
+                             subplot_kw = {'projection': projection},
+                             squeeze = False, constrained_layout = True)
+
+    for ax, exp in zip(axes.flat, plot_exps):
+        f = fields[exp]
+        data, lon = add_cyclic_point(f.values, coord = f.lon)  # avoids white stripe at the seam
+        cf = ax.contourf(lon, f.lat, data, levels = levels, cmap = cmap, extend = 'both',
+                         transform = ccrs.PlateCarree())
+        ax.coastlines(linewidth = 0.8)
+        ax.add_feature(cfeature.BORDERS, linewidth = 0.3, linestyle = ':')
+        ax.set_global()
+        ax.set_title(f'{var}: {exp}' if ref_exp is None else f'{var}: {exp} - {ref_exp}')
+
+    # hide unused panels
+    for ax in axes.flat[len(plot_exps):]:
+        ax.set_visible(False)
+
+    label = cbar_label or (var if ref_exp is None else f'{var} (wrt {ref_exp})')
+    fig.colorbar(cf, ax = axes, orientation = 'horizontal', shrink = 0.6, pad = 0.03, label = label)
+
+    #name = '-'.join(plot_exps)
+    #suffix = f'_wrt_{ref_exp}' if ref_exp is not None else ''
+    #fig.savefig(cart_out + f'map_{var}_{name}{suffix}.pdf')
+
+    return fig
+
 
 def plot_amoc_2d_all(amoc_mean, exps, cart_out = cart_out):
     nx = int(np.ceil(np.sqrt(len(exps))))
@@ -2925,7 +2997,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                        ocevars = 'tos zos heatc qt_oce sos mldr10_1'.split(), 
                        icevars = 'siconc sivolu sithic'.split(), year_clim = None, plot_diffref=False, plot_param=False, 
                        param_map={}, skip_first_year=False, exp_type = 'PD', density=False, colors=None, 
-                       rolling = None, file_lists = None, plot_zonal_vars = None, ongoing = [], do_all_from_scratch = False,
+                       rolling = None, file_lists = None, plot_zonal_vars = None, plot_map_atm_vars = ['tas', 'alb'], ongoing = [], do_all_from_scratch = False,
                        loglevel=logging.INFO):
     """
     Runs all multi-exps diagnostics.
@@ -2944,6 +3016,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 
     if plot_zonal_vars is None:
         plot_zonal_vars = atmvars
+
+    if plot_map_atm_vars is None:
+        plot_map_atm_vars = atmvars
 
     cart_out_nc = cart_out + '/exps_clim/'
     cart_out_figs = cart_out + f"/check_{'-'.join(exps)}/"
@@ -2988,6 +3063,13 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 
             if var in plot_zonal_vars:
                 fig = plot_zonal_var(clim_all['atm_clim'], exps = exps, var = var, ref_exp = ref_exp, colors=colors)
+                allfigs.append(fig)
+
+            # your example, generalized: several exps vs xa08
+            if var in plot_map_atm_vars:
+                fig = plot_map_var(clim=clim_all['atm_clim'], weights=clim_all['atm_weights'], 
+                                   exps=exps, var=var, ref_exp = ref_exp, 
+                                   cbar_label = f'Delta {var}')
                 allfigs.append(fig)
 
     if 'atm_imb' in list(clim_all['atm_mean'].items())[0][1]:

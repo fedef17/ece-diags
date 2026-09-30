@@ -19,6 +19,8 @@ import cartopy.feature as cfeature
 from cartopy.util import add_cyclic_point
 import matplotlib.gridspec as gridspec # GRIDSPEC !
 import matplotlib.ticker as mticker
+from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgba
 # import statsmodels.api as sm
 # from statsmodels.regression.rolling import RollingOLS
 #import xesmf as xe
@@ -1301,9 +1303,14 @@ def plot_amoc_ts(amoc_max, exp, ylim = (5, 20), ax = None, color = None, text_xs
     return ax
 
 
-def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 20, imbalance = 0., ylim = None, colors = None, year_clim = None, rolling = None, s_dot = 1000, labels = True):
+def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 20, 
+              imbalance = 0., ylim = None, colors = None, year_clim = None, rolling = None, s_dot = 1000, 
+              labels = True, lw = 0.8, alpha_min = 0.2, alpha = 0.8, s_start = 80, mark_last = False):
     """
     gregory plot
+    The line alpha increases with time (faint = start, opaque = end).
+    A square marks the first year, a small black-edged dot marks the last year,
+    the big dot is the climatological mean (last n_end years or year_clim).
     """
 
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -1315,18 +1322,39 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
         colors = get_colors(exps)
 
     for exp, col in zip(exps, colors):
-        if not rolling:
-            ax.plot(atmmean_exp[exp].tas, atmmean_exp[exp].toa_net, label = exp, lw = 0.2, color = col)
-        else:
-            ax.plot(atmmean_exp[exp].tas.rolling(year = rolling, min_periods = 1).mean(), atmmean_exp[exp].toa_net.rolling(year = rolling, min_periods = 1).mean(), label = exp, lw = 0.2, color = col)
-        #ax.scatter(atmmean_exp[exp].tas.sel(year = slice(1990, 2000)).mean(), atmmean_exp[exp].toa_net.sel(year = slice(1990, 2000)).mean(), s = 1000, color = 'red', marker = 'o')
+        tas = atmmean_exp[exp].tas
+        toa = atmmean_exp[exp].toa_net
+        if rolling:
+            tas = tas.rolling(year = rolling, min_periods = 1).mean()
+            toa = toa.rolling(year = rolling, min_periods = 1).mean()
+
+        xs, ys = np.asarray(tas.values, dtype=float), np.asarray(toa.values, dtype=float)
+
+        # 1) line with alpha increasing in time
+        points = np.column_stack([xs, ys]).reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis = 1)
+        rgba = np.tile(to_rgba(col), (len(segments), 1))
+        rgba[:, 3] = np.linspace(alpha_min, 1., len(segments))
+        lc = LineCollection(segments, colors = rgba, linewidths = lw)
+        ax.add_collection(lc)
+        ax.plot([], [], color = col, label = exp)  # proxy for legend
+
+        # 2) square on the starting point
+        ax.scatter(xs[0], ys[0], s = s_start, marker = 's', color = col, edgecolor = 'k', lw = 1, zorder = 4, alpha=alpha_min)
+
+        # last point of the series (for comparison with the big dot)
+        if mark_last:
+            ax.scatter(xs[-1], ys[-1], s = 30, marker = 'o', color = col, edgecolor = 'k', lw = 1, zorder = 4, alpha=alpha_min)
+
         if year_clim is None:
             x, y = atmmean_exp[exp].tas.isel(year = slice(-n_end, None)).mean(), atmmean_exp[exp].toa_net.isel(year = slice(-n_end, None)).mean()
         else:
             x, y = atmmean_exp[exp].tas.sel(year = slice(year_clim[0], year_clim[1])).mean(), atmmean_exp[exp].toa_net.sel(year = slice(year_clim[0], year_clim[1])).mean()
-        ax.scatter(x, y, s = s_dot, color = col, marker = 'o', alpha = 0.5, zorder = 3)
+        ax.scatter(x, y, s = s_dot, color = col, marker = 'o', edgecolors=col, alpha = alpha, zorder = 3)
         if labels:
-            ax.text(x+shift, y+shift, exp, fontsize=12, ha='right', color = col)
+            ax.text(x+shift, y+shift, exp, fontsize=12, ha='right', color = 'black')
+
+    ax.autoscale_view()  # needed because add_collection doesn't rescale the axes
 
     ### plot target shades
     xlim_tot = ax.get_xlim()
@@ -1357,7 +1385,6 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
         ax.fill_betweenx(np.arange(ylim_tot[0], ylim_tot[1], 0.1), tas_clim - 0.15, tas_clim + 0.15, color = 'burlywood', alpha = 0.2, edgecolor = None, zorder = 0)
         ax.fill_between(np.arange(xlim_tot[0], xlim_tot[1], 0.1), net_toa_clim - imbalance - 0.15, net_toa_clim - imbalance + 0.15, color = 'burlywood', alpha = 0.2, edgecolor = None, zorder = 0)
 
-    
     ax.set_xlabel('GTAS (K)')
     ax.set_ylabel('net TOA (W/m$^2$)')
     #plt.legend()
@@ -1367,14 +1394,22 @@ def plot_greg(atmmean_exp, exps, cart_out = cart_out, exp_type = 'PI', n_end = 2
 
     name = '-'.join(exps)
     fig.savefig(cart_out + f'check_tuning_{name}.pdf')
-    #fig.savefig(cart_out + f'check_tuning_{'-'.join(exps)}.pdf')
     plt.show()
 
     return fig
 
 
 
-def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI', n_end = 20, colors = None, labels = None, colors_legend = None, lw = 0.3, alpha = 0.5, background_color = None, year_clim = None, rolling = None, s_dot = 1000):
+def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI', n_end = 20, colors = None, 
+                      labels = None, colors_legend = None, lw = 0.8, alpha = 0.8, alpha_min = 0.3, background_color = None, 
+                      year_clim = None, rolling = None, s_dot = 1000, s_start = 80, mark_last = False):
+    """
+    AMOC vs GTAS.
+    The line alpha increases with time (faint = start, opaque = end).
+    A square marks the first year, a small black-edged dot marks the last year,
+    the big dot is the climatological mean (last n_end years or year_clim).
+    `alpha` is the transparency of the big dot.
+    """
     fig, ax = plt.subplots(figsize=(12, 8))
 
     if exps is None:
@@ -1382,9 +1417,6 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
 
     if colors is None:
         colors = get_colors(exps)
-
-    # logging.info('AAAAAA')
-    # logging.info(clim_all['amoc_ts'].keys())
 
     for exp, col in zip(exps, colors):
         if exp not in clim_all['amoc_ts']: 
@@ -1406,18 +1438,41 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
             logging.info('cutting excess data in amoc')
             y = y.sel(year = slice(x.year.min(), x.year.max()))
 
-        if not rolling:
-            ax.plot(x, y, label = exp, lw = lw, color = col)
+        if rolling:
+            x_plot = x.rolling(year = rolling, min_periods = 1).mean()
+            y_plot = y.rolling(year = rolling, min_periods = 1).mean()
         else:
-            ax.plot(x.rolling(year = rolling, min_periods = 1).mean(), y.rolling(year = rolling, min_periods = 1).mean(), label = exp, lw = lw, color = col)
-        
-        if year_clim is None:
-            x, y = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
-        else:
-            x, y = x.sel(year = slice(year_clim[0], year_clim[1])).mean(), y.sel(year = slice(year_clim[0], year_clim[1])).mean()
+            x_plot, y_plot = x, y
 
-        ax.scatter(x, y, s = s_dot, color = col, marker = 'o', edgecolors = col, alpha = 0.5, zorder = 3)
-        ax.text(x+0.1, y+0.1, exp, fontsize=12, ha='right', color = col)
+        xs = np.asarray(x_plot.values, dtype=float)
+        ys = np.asarray(y_plot.values, dtype=float)
+        n = min(len(xs), len(ys))  # safety in case lengths still differ
+        xs, ys = xs[:n], ys[:n]
+
+        # 1) line with alpha increasing in time
+        points = np.column_stack([xs, ys]).reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis = 1)
+        rgba = np.tile(to_rgba(col), (len(segments), 1))
+        rgba[:, 3] = np.linspace(alpha_min, 1., len(segments))
+        ax.add_collection(LineCollection(segments, colors = rgba, linewidths = lw))
+        ax.plot([], [], color = col, label = exp)  # proxy for legend
+
+        # 2) square on the starting point
+        ax.scatter(xs[0], ys[0], s = s_start, marker = 's', color = col, edgecolor = 'k', lw = 1, zorder = 4, alpha=alpha_min)
+
+        # last point of the series
+        if mark_last:
+            ax.scatter(xs[-1], ys[-1], s = 30, marker = 'o', color = col, edgecolor = 'k', lw = 1, zorder = 4, alpha=alpha_min)
+
+        if year_clim is None:
+            xm, ym = x.isel(year = slice(-n_end, None)).mean(), y.isel(year = slice(-n_end, None)).mean()
+        else:
+            xm, ym = x.sel(year = slice(year_clim[0], year_clim[1])).mean(), y.sel(year = slice(year_clim[0], year_clim[1])).mean()
+
+        ax.scatter(xm, ym, s = s_dot, color = col, marker = 'o', edgecolors = col, alpha = alpha, zorder = 3)
+        ax.text(xm+0.1, ym+0.1, exp, fontsize=12, ha='right', color = 'black')
+
+    ax.autoscale_view()  # needed because add_collection doesn't rescale the axes
 
     ax.set_xlabel('GTAS (K)')
     ax.set_ylabel('AMOC max (Sv)')
@@ -2005,6 +2060,7 @@ def plot_zonal_var(atmclim, exps, var, ref_exp = None, cart_out = cart_out, colo
     
     ax.set_ylabel(var if ref_exp is None else var + f" (wrt {ref_exp})")
     ax.set_xlabel('lat')
+    ax.set_title(var)
 
     return fig
 
@@ -2018,7 +2074,7 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
 
     if domain not in ['atm', 'oce', 'ice', 'amoc', 'rho']:
         raise ValueError('domain should be one among: atm, oce, ice, amoc, rho')
-    
+   
     if domain == 'amoc':
         ts_dataset = clim_all[f'{domain}_ts']
     else:
@@ -2070,7 +2126,7 @@ def plot_var_ts(clim_all, domain, vname, exps = None, ref_exp = None, rolling = 
 
         # ax.text(y.year[-1] + 5, np.nanmean(y.values[-30:]), exp, fontsize=12, ha='right', color = col) # not working for some evil reason
     
-    ax.set_title('')
+    ax.set_title(vname)
     ax.legend()
     name = '-'.join([exp for exp in exps])
     fig.savefig(cart_out + f'check_ts_{domain}_{vname}_{name}.pdf')
@@ -3094,7 +3150,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 
     if coupled:
         if clim_all['amoc_ts'] is not None:
-            fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.25, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors, rolling = rolling)
+            fig_amoc_greg = plot_amoc_vs_gtas(clim_all, exps, lw = 0.8, cart_out = cart_out_figs, exp_type = exp_type, year_clim = year_clim, colors=colors, rolling = rolling)
             #_debug_check(fig_amoc_greg, 'amoc_vs_gtas')
             allfigs.append(fig_amoc_greg)
 

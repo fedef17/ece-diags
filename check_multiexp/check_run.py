@@ -1591,7 +1591,8 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
         if 'time_counter' in y.dims:
             y = y.groupby('time_counter.year').mean()
             
-        y = y.squeeze()
+        # drop singleton dims (basin, x) but keep 'year', which may have length 1 for a short run
+        y = y.squeeze([d for d in y.dims if d != 'year' and y.sizes[d] == 1])
         logging.debug(f'Exp: {exp}: After processing, AMOC shape: {y.shape}, GTAS shape: {x.shape}')
         if len(y.year) > len(x.year):
             logging.info('cutting excess data in amoc')

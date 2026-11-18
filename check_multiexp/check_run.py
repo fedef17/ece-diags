@@ -654,7 +654,7 @@ def select_files(pattern_or_list, first_year = None, last_year = None):
         files = glob.glob(pattern_or_list)
     else:
         files = list(pattern_or_list)
-    files = sorted(files)
+    files = sorted(os.path.normpath(f) for f in files)
 
     selected = []
     for f in files:
@@ -706,18 +706,45 @@ def open_output(files, chunks = {'time_counter': 240}):
     If the last file is still being written (HDF error -101), it is dropped.
     Raises if a file has a wrong calendar (run before the XIOS time origin): rerun needed.
     """
-    files = list(files)
+    # normalised paths: xarray reports normalised filenames in its errors (e.g. no '//')
+    files = [os.path.normpath(f) for f in files]
     kwargs = dict(decode_times = time_coder, chunks = chunks,
                   combine = 'nested', concat_dim = 'time_counter',
                   data_vars = 'minimal', coords = 'minimal', compat = 'override',
                   parallel = True, preprocess = _check_time_axis)
+    if not files:
+        raise FileNotFoundError('open_output: empty file list, no output files found')
+
+    def _unreadable(err, files_tried, after_drop = False):
+        bad = os.path.normpath(getattr(err, 'filename', None) or files_tried[-1])
+        reason = 'check the run output.'
+        if after_drop:
+            reason = ('it is still unreadable after dropping the last file (still being written): '
+                      'check the run output.')
+        elif len(files_tried) == 1:
+            reason = ('it is the only output file found: the run has probably not completed '
+                      'its first output period yet (file still being written). '
+                      'Wait for the next year to be written, or leave this experiment out for now.')
+        elif bad != files_tried[-1]:
+            reason = ('it is not the last file, so it is probably corrupted '
+                      '(e.g. a crashed or restarted leg): check or remove it.')
+        return OSError(err.errno, f'Cannot read {bad} (NetCDF/HDF error {err.errno}): {reason}')
+
     try:
         return xr.open_mfdataset(files, **kwargs)
     except OSError as err:
-        if err.errno == -101 and len(files) > 1:
-            logging.info(f'Cannot read {files[-1]} (run still ongoing?), dropping it')
+        if err.errno != -101:
+            raise
+        bad = os.path.normpath(getattr(err, 'filename', None) or files[-1])
+        if len(files) == 1 or bad != files[-1]:
+            raise _unreadable(err, files) from err
+        logging.info(f'Cannot read {files[-1]} (run still ongoing?), dropping it')
+        try:
             return xr.open_mfdataset(files[:-1], **kwargs)
-        raise
+        except OSError as err2:
+            if err2.errno != -101:
+                raise
+            raise _unreadable(err2, files[:-1], after_drop = True) from err2
 
 def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True, density= False, atm_remapped = False):
     if atm_remapped:

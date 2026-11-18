@@ -12,6 +12,7 @@ import matplotlib.cm as cm
 from matplotlib.patches import Patch
 from matplotlib.colors import Normalize
 import glob
+import re
 # import cmocean as cmo
 from scipy import stats
 import cartopy.crs as ccrs
@@ -636,6 +637,88 @@ def calc_amoc_ts(data, ax = None, exp_name = 'exp', depth_min = 500., depth_max 
 
 ##################################### READ OUTPUTS ################################
 
+_FILE_YEARS_RE = re.compile(r'_(\d{4})-(\d{4})\.nc$')
+
+def file_years(fname):
+    """(first_year, last_year) from an ECE4 output filename ending in _YYYY-YYYY.nc, else None."""
+    m = _FILE_YEARS_RE.search(os.path.basename(fname))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+def select_files(pattern_or_list, first_year = None, last_year = None):
+    """
+    Sorted list of files (from a glob pattern or a list) whose years, as read from the
+    filename, overlap [first_year, last_year]. Nothing is opened. Files without years
+    in their name are always kept.
+    """
+    if isinstance(pattern_or_list, str):
+        files = glob.glob(pattern_or_list)
+    else:
+        files = list(pattern_or_list)
+    files = sorted(files)
+
+    selected = []
+    for f in files:
+        yrs = file_years(f)
+        if yrs is not None:
+            if first_year is not None and yrs[1] < first_year:
+                continue
+            if last_year is not None and yrs[0] > last_year:
+                continue
+        selected.append(f)
+    return selected
+
+def last_file_year(pattern_or_list):
+    """Last year available according to filenames (None if no file / no years in names)."""
+    yrs = [file_years(f) for f in select_files(pattern_or_list)]
+    yrs = [y[1] for y in yrs if y is not None]
+    return max(yrs) if yrs else None
+
+def _check_time_axis(ds):
+    """
+    open_mfdataset preprocess: raise if the decoded time_counter does not lie in the
+    years of the filename or is not monotonic. This happens when the run starts before
+    the XIOS time origin (ref_year, default 1800): XIOS then writes every year as if it
+    were the origin year, with the last month wrapped around. The output is unusable.
+    """
+    src = ds.encoding.get('source', '')
+    yrs = file_years(src)
+    if yrs is None or 'time_counter' not in ds.dims:
+        return ds
+    time = ds['time_counter']
+    years = time.dt.year.values
+    ok_years = np.all((years >= yrs[0]) & (years <= yrs[1]))
+    ok_mono = time.size < 2 or bool(np.all(time.values[1:] > time.values[:-1]))
+    if not (ok_years and ok_mono):
+        raise ValueError(
+            f"Wrong calendar in {src}: filename years {yrs[0]}-{yrs[1]}, but time_counter "
+            f"goes from {time.values[0]} to {time.values[-1]}"
+            f"{'' if ok_mono else ' and is not monotonic'} (units: {time.encoding.get('units')}). "
+            "The run probably starts before the XIOS time origin (ref_year in context_nemo.xml / "
+            "context_oifs.xml): set ref_year <= first year and rerun the experiment.")
+    return ds
+
+def open_output(files, chunks = {'time_counter': 240}):
+    """
+    Open a sorted list of ECE4 output files (one or more years each) along time_counter.
+    Files are concatenated in the given order (no coordinate sorting), and variables /
+    coordinates without time are taken from the first file instead of being compared
+    across all files: much faster with many files.
+    If the last file is still being written (HDF error -101), it is dropped.
+    Raises if a file has a wrong calendar (run before the XIOS time origin): rerun needed.
+    """
+    files = list(files)
+    kwargs = dict(decode_times = time_coder, chunks = chunks,
+                  combine = 'nested', concat_dim = 'time_counter',
+                  data_vars = 'minimal', coords = 'minimal', compat = 'override',
+                  parallel = True, preprocess = _check_time_axis)
+    try:
+        return xr.open_mfdataset(files, **kwargs)
+    except OSError as err:
+        if err.errno == -101 and len(files) > 1:
+            logging.info(f'Cannot read {files[-1]} (run still ongoing?), dropping it')
+            return xr.open_mfdataset(files[:-1], **kwargs)
+        raise
+
 def file_list(exp, user, cart_exp = '/ec/res4/scratch/{}/ece4/', remove_last_year = False, coupled = True, density= False, atm_remapped = False):
     if atm_remapped:
         cart = f'{cart_exp.format(user)}/{exp}/output/oifs_remap/'
@@ -835,23 +918,66 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 filz_atm[exp], filz_atm3d[exp], filz_nemo[exp], filz_amoc[exp], filz_ice[exp] = file_list(exp, us, cart_exp = cart_exp, remove_last_year = remove_last_year)
 
     # ── helpers ───────────────────────────────────────────────────────────────
-    def _smmregrid_area_weights(filelist, exp, target_grid='r180x90', method="ycon"):
-        logging.info(f'Computing regridding weights and areas for {exp} to {target_grid}')
-        logging.debug(f'  → method: {method}')
-        logging.debug(f'  → source grid: {filelist}')
-        basefile = glob.glob(filelist[exp])[0]
-        logging.debug(f'  → base file: {basefile}')
-        generator = CdoGenerate(source_grid=basefile, target_grid=target_grid)
-        areas = None
+    def _smmregrid_area_weights(filelist, exp, domain, fallback_file=None,
+                                target_grid='r180x90', method="ycon"):
+        """
+        Regridding weights and areas for exp, in order of preference:
+          1. cached files in cart_out (computed earlier from the original output)
+          2. original model output (result is cached for later use)
+          3. fallback_file (e.g. the saved climatology, which keeps lat/lon but no
+             cell corners): if `method` needs corners (e.g. ycon), retry with 'dis'
+        """
+        logging.info(f'Computing regridding weights and areas for {exp} ({domain}) to {target_grid}')
+        w_cache = cart_out + f'weights_{domain}_{exp}_{target_grid}_{method}.nc'
+        a_cache = cart_out + f'areas_{domain}_{exp}.nc'
+
+        if os.path.exists(w_cache):
+            logging.info(f'  → reading cached weights: {w_cache}')
+            weights = xr.load_dataset(w_cache)
+            areas = xr.load_dataset(a_cache) if os.path.exists(a_cache) else None
+            return weights, areas
+
+        filz = filelist[exp]
+        rawfiles = sorted(glob.glob(filz)) if isinstance(filz, str) else list(filz)
+        if rawfiles:
+            basefile, from_raw = rawfiles[0], True
+        elif fallback_file is not None and os.path.exists(fallback_file):
+            basefile, from_raw = fallback_file, False
+            logging.info(f'  → original output not found, using {fallback_file} as source grid')
+        else:
+            logging.error(f'No source grid available for {exp} ({domain}): no weights')
+            return None, None
+        logging.debug(f'  → base file: {basefile}, method: {method}')
+
         weights = None
-        try: 
+        areas = None
+        try:
+            generator = CdoGenerate(source_grid=basefile, target_grid=target_grid)
+        except Exception as e:
+            logging.error(f'Cannot set up regridding for {exp} ({domain}): {e}')
+            return None, None
+        try:
             weights = generator.weights(method=method).load()
         except Exception as e:
-            logging.error(f'Error while computing weights for {exp}: {e}')
+            if from_raw:
+                logging.error(f'Error while computing weights for {exp}: {e}')
+            else:
+                logging.info(f'  → {method} weights failed on {basefile} (no cell corners?), retrying with dis')
+                try:
+                    weights = generator.weights(method='dis').load()
+                except Exception as e2:
+                    logging.error(f'Error while computing weights for {exp}: {e2}')
         try:
             areas = generator.areas().load()
         except Exception as e:
-            logging.error(f'Error while computing areas for {exp}: {e}')
+            logging.debug(f'Could not compute areas for {exp} ({domain}): {e}')
+
+        # cache only what comes from the original output, so it survives its deletion
+        if from_raw:
+            if weights is not None:
+                weights.to_netcdf(w_cache)
+            if areas is not None:
+                areas.to_netcdf(a_cache)
 
         return weights, areas
 
@@ -883,25 +1009,9 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             return 'update', None
         return False, None
 
-    def _open_mfdataset_safe(filz, exp, us, coupled, suffix='atm'):
-        try:
-            return xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240}, data_vars='all')
-        except OSError as err:
-            logging.info(err)
-            if err.errno == -101:
-                logging.info('Run still ongoing, removing last year')
-                new_filz = file_list(exp, us, cart_exp=cart_exp,
-                                    remove_last_year=True, coupled=coupled)
-                filz_atm_new, filz_atm3d_new, filz_nemo_new, filz_amoc_new, filz_ice_new = new_filz
-                filz_new = {'atm': filz_atm_new, 'atm3d': filz_atm3d_new, 'oce': filz_nemo_new,
-                    'amoc': filz_amoc_new, 'ice': filz_ice_new}[suffix]
-                file = xr.open_mfdataset(filz_new, decode_times=time_coder,
-                                        chunks={'time_counter': 240}, data_vars='all' )
-                logging.info(f'  → opened {len(filz_new)} files, last year removed')
-                logging.info(f'  → new last year: {file.time_counter[-1].values}')
-                return file
-            else:
-                raise err
+    def _open_mfdataset_safe(filz, *args, **kwargs):
+        # kept for backward compatibility: file selection + ongoing-run handling now in open_output
+        return open_output(select_files(filz))
 
     def _normalise_amoc_ts(ds):
         if 'time_counter' in ds.dims:
@@ -913,78 +1023,100 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
     # ── per-domain compute (full dataset) ─────────────────────────────────────
 
     def _compute_atm(exp, us, coupled, vars=atmvars, save=True):
-        ds = _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm')
+        ds = _open_mfdataset_safe(filz_atm[exp])
         return compute_atm_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 atmvars=vars, year_clim=year_clim)
 
     def _compute_oce(exp, us, vars=ocevars, save=True):
-        #logging.info(filz_nemo[exp])
-        ds = _open_mfdataset_safe(filz_nemo[exp], exp, us, coupled=True, suffix='oce')
-        # ds = xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder,
-        #                        chunks={'time_counter': 240})
+        ds = _open_mfdataset_safe(filz_nemo[exp])
         return compute_oce_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 ocevars=vars, year_clim=year_clim)
 
     def _compute_ice(exp, us, vars=icevars, save=True):
-        ds = _open_mfdataset_safe(filz_ice[exp], exp, us, coupled=True, suffix='ice')
-        # ds = xr.open_mfdataset(filz_ice[exp], decode_times=time_coder,
-        #                        chunks={'time_counter': 240})
+        ds = _open_mfdataset_safe(filz_ice[exp])
         return compute_ice_clim(ds, exp, us, cart_exp=cart_exp,
                                 cart_out=cart_out if save else None,
                                 icevars=vars, year_clim=year_clim)
 
     def _compute_amoc(exp, save=True):
-        ds = _open_mfdataset_safe(filz_amoc[exp], exp, us, coupled=True, suffix='amoc')
-            # ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
-            #                        chunks={'time_counter': 240})
+        ds = _open_mfdataset_safe(filz_amoc[exp])
         return compute_amoc_clim(ds, exp,
                                 cart_out=cart_out if save else None,
                                 year_clim=year_clim)
 
-    # ── per-domain update (append new timesteps only) ─────────────────────────
+    # ── per-domain update (read only new years + climatology window) ──────────
+
+    def _update_files(domain, filz, last_saved):
+        """
+        Decide from the filenames alone which files an update needs.
+        Returns (files, first_year, clim_changes), or (None, None, False) if no new data.
+        Files cover the new years and, if the climatology changes, its window:
+        the last 20 years (+1 spare in case the last file is still being written)
+        or year_clim.
+        """
+        last_avail = last_file_year(filz)
+        if last_avail is None or last_avail <= last_saved:
+            logging.info(f'[{domain}] No new files after {last_saved}, using existing diagnostics')
+            return None, None, False
+
+        if year_clim is None:
+            clim_first, clim_changes = last_avail - 20, True
+        elif year_clim[1] > last_saved:
+            clim_first, clim_changes = year_clim[0], True
+        else:  # fixed climatology window already fully in saved data
+            clim_first, clim_changes = None, False
+
+        first = last_saved + 1 if clim_first is None else min(last_saved + 1, clim_first)
+        files = select_files(filz, first_year=first)
+        logging.info(f'[{domain}] Saved data up to {last_saved}, files up to {last_avail}: '
+                     f'reading {len(files)} files from {first}')
+        return files, first, clim_changes
 
     def _update_domain(exp, us, domain, clim_old, mean_old, filz,
                        compute_fn, clim_path, mean_path):
-        last_year = int(mean_old.year[-1].values)
-        logging.info(f'[{domain}] Last year in saved data: {last_year}')
-
-        # try:
-        #     ds = xr.open_mfdataset(filz, decode_times=time_coder, chunks={'time_counter': 240})
-        # except OSError as err:
-        ds = _open_mfdataset_safe(filz, exp, us, True if domain in ['oce','ice'] else False, suffix=domain) # THIS changes the file list!
-
-        ds_new = ds.sel(time_counter=slice(f'{last_year + 1}0101', None))
-        if len(ds_new.time_counter) == 0:
-            logging.info(f'[{domain}] No new data, using existing diagnostics')
+        last_saved = int(mean_old.year[-1].values)
+        files, first, clim_changes = _update_files(domain, filz, last_saved)
+        if files is None:
             return clim_old, mean_old
-        logging.info(f'[{domain}] Found {len(ds_new.time_counter)} new time steps')
-        clim_new, mean_new = compute_fn(ds_new)
+
+        ds = open_output(files)
+        ds = ds.sel(time_counter=slice(f'{first:04d}-01-01', None))  # in case of multi-year files
+        clim_new, mean_new = compute_fn(ds)
+        mean_new = mean_new.sel(year=slice(last_saved + 1, None))
+        if mean_new.sizes['year'] == 0:
+            logging.info(f'[{domain}] No new complete years, using existing diagnostics')
+            return clim_old, mean_old
+        logging.info(f'[{domain}] Adding years {int(mean_new.year[0])}-{int(mean_new.year[-1])}')
+
+        clim_updated = clim_new if clim_changes else clim_old
         mean_updated = xr.concat([mean_old, mean_new], dim='year')
-        clim_new.to_netcdf(clim_path)
+        clim_updated.to_netcdf(clim_path)
         mean_updated.to_netcdf(mean_path)
-        return clim_new, mean_updated
+        return clim_updated, mean_updated
 
-    def _update_amoc(exp, amoc_ts_old, amoc_mean_old):
-        last_year = int(amoc_ts_old.year[-1].values)
-        # ds = xr.open_mfdataset(filz_amoc[exp], decode_times=time_coder,
-        #                        chunks={'time_counter': 240})
-        ds = _open_mfdataset_safe(filz_amoc[exp], exp, us, True, suffix='amoc')
-
-        
-        ds_new = ds.sel(time_counter=slice(f'{last_year + 1}0101', None))
-        if len(ds_new.time_counter) == 0:
-            logging.info('[amoc] No new data, using existing diagnostics')
+    def _update_amoc(exp, amoc_ts_old, amoc_mean_old, amoc_2d_path, amoc_ts_path):
+        last_saved = int(amoc_ts_old.year[-1].values)
+        files, first, clim_changes = _update_files('amoc', filz_amoc[exp], last_saved)
+        if files is None:
             return amoc_mean_old, amoc_ts_old
-        logging.info(f'[amoc] Found {len(ds_new.time_counter)} new time steps')
-        amoc_mean_new, amoc_ts_new = compute_amoc_clim(ds_new, exp,
-                                                        cart_out=None,
-                                                        year_clim=year_clim)
+
+        ds = open_output(files)
+        ds = ds.sel(time_counter=slice(f'{first:04d}-01-01', None))
+        amoc_mean_new, amoc_ts_new = compute_amoc_clim(ds, exp, cart_out=None,
+                                                       year_clim=year_clim)
+        amoc_ts_new = amoc_ts_new.sel(year=slice(last_saved + 1, None))
+        if amoc_ts_new.sizes['year'] == 0:
+            logging.info('[amoc] No new complete years, using existing diagnostics')
+            return amoc_mean_old, amoc_ts_old
+        logging.info(f'[amoc] Adding years {int(amoc_ts_new.year[0])}-{int(amoc_ts_new.year[-1])}')
+
+        amoc_mean_updated = amoc_mean_new if clim_changes else amoc_mean_old
         amoc_ts_updated = xr.concat([amoc_ts_old, amoc_ts_new], dim='year')
-        amoc_mean_new.to_netcdf(cart_out + f'amoc_2d_tuning_{exp}.nc')
-        amoc_ts_updated.to_netcdf(cart_out + f'amoc_ts_tuning_{exp}.nc')
-        return amoc_mean_new, amoc_ts_updated
+        amoc_mean_updated.to_netcdf(amoc_2d_path)
+        amoc_ts_updated.to_netcdf(amoc_ts_path)
+        return amoc_mean_updated, amoc_ts_updated
 
     # ── merge missing vars into existing saved files ───────────────────────────
 
@@ -1095,7 +1227,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'atm', atm_clim_path, atm_mean_path,
                     missing=atm_missing,
                     compute_fn_missing=lambda vars: compute_atm_clim(
-                        _open_mfdataset_safe(filz_atm[exp], exp, us, coupled, suffix='atm'),
+                        _open_mfdataset_safe(filz_atm[exp]),
                         exp, us, cart_exp=cart_exp, cart_out=None, atmvars=vars, year_clim=year_clim))
 
             elif atm_action == 'update':
@@ -1114,7 +1246,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 atmclim_exp[exp], atmmean_exp[exp] = _compute_atm(exp, us, coupled)
 
             # add weights and areas for smm regridding (from original file, all grids the same)
-            atmweights_exp[exp], atmareas_exp[exp] = _smmregrid_area_weights(filz_atm, exp)
+            atmweights_exp[exp], atmareas_exp[exp] = _smmregrid_area_weights(filz_atm, exp, 'atm', fallback_file=atm_clim_path)
 
         # ── OCE ───────────────────────────────────────────────────────────────
         if coupled:
@@ -1132,7 +1264,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'oce', oce_clim_path, oce_mean_path,
                     missing=oce_missing,
                     compute_fn_missing=lambda vars: compute_oce_clim(
-                        xr.open_mfdataset(filz_nemo[exp], decode_times=time_coder, chunks={'time_counter': 240}),
+                        _open_mfdataset_safe(filz_nemo[exp]),
                         exp, us, cart_exp=cart_exp, cart_out=None,
                         ocevars=vars, year_clim=year_clim))
 
@@ -1153,7 +1285,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 oceclim_exp[exp], ocemean_exp[exp] = _compute_oce(exp, us)
 
             # add weights and areas for smm regridding (from original file, all grids the same)
-            oceweights_exp[exp], oceareas_exp[exp] = _smmregrid_area_weights(filz_nemo, exp, method="bil")
+            oceweights_exp[exp], oceareas_exp[exp] = _smmregrid_area_weights(filz_nemo, exp, 'oce', fallback_file=oce_clim_path, method="bil")
 
             # ── ICE ───────────────────────────────────────────────────────────
             if not ice_action:
@@ -1166,7 +1298,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                     'ice', ice_clim_path, ice_mean_path,
                     missing=ice_missing,
                     compute_fn_missing=lambda vars: compute_ice_clim(
-                        xr.open_mfdataset(filz_ice[exp], decode_times=time_coder, chunks={'time_counter': 240}),
+                        _open_mfdataset_safe(filz_ice[exp]),
                         exp, us, cart_exp=cart_exp, cart_out=None,
                         icevars=vars, year_clim=year_clim))
 
@@ -1187,7 +1319,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 iceclim_exp[exp], icemean_exp[exp] = _compute_ice(exp, us)
 
             # add weights and areas for smm regridding (from original file, all grids the same)
-            iceweights_exp[exp], iceareas_exp[exp] = _smmregrid_area_weights(filz_ice, exp, method="bil")
+            iceweights_exp[exp], iceareas_exp[exp] = _smmregrid_area_weights(filz_ice, exp, 'ice', fallback_file=ice_clim_path, method="bil")
 
             ## density
             if density:
@@ -1214,7 +1346,7 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                 amoc_ts_old   = _normalise_amoc_ts(xr.load_dataset(amoc_ts_path))
                 amoc_mean_old = xr.load_dataset(amoc_2d_path)
                 amoc_mean_exp[exp], amoc_ts_exp[exp] = _update_amoc(
-                    exp, amoc_ts_old, amoc_mean_old)
+                    exp, amoc_ts_old, amoc_mean_old, amoc_2d_path, amoc_ts_path)
 
             else:  # 'from_scratch'
                 logging.info('[amoc] Computing from scratch...')

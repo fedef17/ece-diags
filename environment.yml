@@ -1,0 +1,32 @@
+# Conda environment for ece-diags
+#   mamba env create -f environment.yml
+#   python -m ipykernel install --user --name ecediags --display-name "Python (ece-diags)"
+name: ecediags
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  # core data stack
+  - numpy
+  - pandas
+  - scipy
+  - xarray
+  - netcdf4
+  - cftime
+  - pyyaml
+  # parallel / HPC
+  - dask
+  - distributed
+  - dask-jobqueue
+  # plotting
+  - matplotlib
+  - cartopy
+  # ocean diagnostics (density)
+  - gsw-xarray
+  # regridding: smmregrid >= 0.3.0 calls CDO and requires CDO >= 2.6.2
+  - cdo>=2.6.2
+  # notebooks
+  - ipykernel
+  - pip
+  - pip:
+      - smmregrid>=0.3.0

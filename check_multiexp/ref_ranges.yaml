@@ -1,0 +1,106 @@
+# Reference ranges drawn as horizontal bands in the time-series and boxplot panels
+# (compare_multi_exps, plot_types 'timeseries' and 'boxplot').
+#
+# One entry per variable, named as in the time series (sea ice per hemisphere: siconc_N, ...).
+# For each experiment type (exp_type: PD, PI) a range [low, high] in the units of the time series
+# (the panel titles show them). 'source' is only documentation.
+#   - a range for the run's exp_type is drawn in grey;
+#   - in PI runs, a variable with only a PD range gets the PD band in light yellow
+#     ("PD obs, reference only"): useful for orientation, not a target;
+#   - variables not listed, and exp_type values without ranges (e.g. 'paleo'), get no band.
+# toa_net is shifted by -imbalance (the model's atmospheric energy leak), as in the Gregory plot.
+#
+# Use another file with compare_multi_exps(..., ref_ranges='my_ranges.yaml') or with the key
+# 'ref_ranges' in the yaml config of main(); obs_bands=False switches the bands off.
+#
+# NOTE: sea-ice area and NH volume/thickness are computed from the NSIDC and PIOMAS data files; the
+# other values were written from memory of the cited datasets on 2026-11-24: check before relying on them.
+
+# ---------------- radiation (W m-2, positive downward for net fluxes) ----------------
+toa_net:
+  PD: [0.75, 1.05]       # 0.9 +- 0.15, as in the Gregory plot
+  PI: [-0.15, 0.15]      # equilibrium, as in the Gregory plot
+  source: CERES EBAF (PD); equilibrium (PI)
+rsut:
+  PD: [97., 101.]
+  source: CERES EBAF Ed4, 2001-2020
+rlut:
+  PD: [238., 242.]
+  source: CERES EBAF Ed4, 2001-2020
+rsntcs:
+  PD: [285., 290.]
+  source: CERES EBAF Ed4 clear sky, 2001-2020
+rlntcs:
+  PD: [-268., -264.]     # minus clear-sky OLR
+  source: CERES EBAF Ed4 clear sky, 2001-2020
+crf:
+  PD: [-21., -18.]
+  source: CERES EBAF Ed4, net cloud radiative effect
+
+# ---------------- surface ----------------
+tas:
+  PD: [287.5, 287.8]     # 14.5 +- 0.15 C, as in the Gregory plot
+  PI: [286.5, 286.8]     # 13.5 +- 0.15 C, as in the Gregory plot
+  source: ERA5 (PD); ERA5 minus ~1 K (PI)
+pr:
+  PD: [3.125e-5, 3.47e-5]   # 2.7-3.0 mm/day
+  source: GPCP v2.3 and surface energy budget estimates
+hfls:
+  PD: [80., 88.]         # positive upward
+  source: Wild et al. 2015; Stephens et al. 2012
+hfss:
+  PD: [17., 24.]         # positive upward
+  source: Wild et al. 2015; Stephens et al. 2012
+rsns:
+  PD: [158., 166.]
+  source: Wild et al. 2015
+rlns:
+  PD: [-60., -52.]
+  source: Wild et al. 2015
+
+# ---------------- energy budget ----------------
+srf_net:
+  PD: [0.6, 1.0]         # heat uptake, per unit global area
+  PI: [-0.2, 0.2]
+  source: ocean heat uptake (PD); equilibrium (PI)
+qt_oce:
+  PD: [0.8, 1.4]         # per unit ocean area
+  PI: [-0.2, 0.2]
+  source: ocean heat uptake (PD); equilibrium (PI)
+atm_imb:
+  PD: [-0.1, 0.1]
+  PI: [-0.1, 0.1]
+  source: model energy closure (not observations)
+oce_imb:
+  PD: [-0.1, 0.1]
+  PI: [-0.1, 0.1]
+  source: model energy closure (not observations)
+
+# ---------------- ocean ----------------
+amoc:
+  PD: [15., 20.]
+  PI: [15., 20.]
+  source: RAPID 26.5N, as in the AMOC vs GTAS plot
+
+# ---------------- sea ice (PD only: PI runs get the light-yellow reference band) ----------------
+# Ranges = min-max of the annual means 1979-2000 (computed on 2026-11-24 from the data files).
+# Area is sea-ice AREA (concentration integral, as in the model), not extent.
+siconc_N:
+  PD: [9.7e12, 10.7e12]    # m2; mean 10.2e12
+  source: NSIDC Sea Ice Index v4 (G02135) monthly area + pole hole (1.19e6 km2 SMMR to Jul 1987, 0.31e6 SSM/I), 1979-2000
+sivolu_N:
+  PD: [2.0e13, 2.5e13]     # m3; mean 2.25e13
+  source: PIOMAS v2.1 monthly volume, 1979-2000
+sithic_N:
+  PD: [1.9, 2.5]           # m, mean over the ice-covered area; mean 2.2
+  source: PIOMAS volume / NSIDC area (incl. pole hole), 1979-2000
+siconc_S:
+  PD: [8.3e12, 9.0e12]     # m2; mean 8.7e12 (no pole hole in the SH)
+  source: NSIDC Sea Ice Index v4 (G02135) monthly area, 1979-2000
+# Antarctic volume and thickness are poorly constrained by observations: approximate, broad ranges
+sivolu_S:
+  PD: [0.7e13, 1.1e13]     # m3
+  source: approximate, ICESat (Kurtz and Markus 2012, 2003-2008) and ASPeCt thickness x NSIDC area
+sithic_S:
+  PD: [0.8, 1.3]           # m, mean over the ice-covered area
+  source: approximate, ASPeCt ship observations (Worby et al. 2008) and ICESat (Kurtz and Markus 2012)

@@ -509,6 +509,12 @@ def _clim_tag(year_clim):
     """Filename tag of the climatology: '' for the last CLIM_YEARS, '_y0-y1' for year_clim."""
     return '' if year_clim is None else f'_{year_clim[0]}-{year_clim[1]}'
 
+def _clim_window(ds, year_clim):
+    """Annual means in the climatology window: the last CLIM_YEARS years, or year_clim=(y0, y1) inclusive."""
+    if year_clim is None:
+        return ds.isel(year = slice(-CLIM_YEARS, None))
+    return ds.sel(year = slice(year_clim[0], year_clim[1]))
+
 def _clim_mean(ds, year_clim):
     """Climatology of annual means: the last CLIM_YEARS years, or year_clim=(y0, y1) inclusive."""
     if year_clim is None:
@@ -517,7 +523,9 @@ def _clim_mean(ds, year_clim):
     logging.debug(f'Using years {year_clim[0]}-{year_clim[1]} for climatology')
     return ds.sel(year = slice(year_clim[0], year_clim[1])).mean('year')
 
-def compute_atm_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None):
+def compute_atm_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, atmvars = 'rsut rlut rsdt tas pr'.split(), year_clim = None,
+                     return_annual = False):
+    """Climatology and annual global means. return_annual=True also returns the annual fields of the climatology window."""
     ds = _annual(ds, atmvars).compute()
     logging.debug('Atmospheric climatology computed')
 
@@ -546,9 +554,12 @@ def compute_atm_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, at
         _save_nc(atmclim, cart_out + f'clim_tuning_{exp}{tag}.nc')
         _save_nc(atmmean, cart_out + f'mean_tuning_{exp}.nc')
 
+    if return_annual:
+        return atmclim, atmmean, _clim_window(ds, year_clim)
     return atmclim, atmmean
 
-def compute_oce_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, grid = 'T'):
+def compute_oce_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'tos heatc qt_oce sos'.split(), year_clim = None, grid = 'T',
+                     return_annual = False):
     # annual means computed once: climatology and global means then come from memory (one read of the output)
     ds = _rename_xy(_annual(ds, ocevars), grid).compute()
     oceclim = _clim_mean(ds, year_clim)
@@ -559,9 +570,12 @@ def compute_oce_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, oc
         _save_nc(oceclim, cart_out + f'clim_oce_tuning_{exp}{tag}.nc')
         _save_nc(ocemean, cart_out + f'mean_oce_tuning_{exp}.nc')
 
+    if return_annual:
+        return oceclim, ocemean, _clim_window(ds, year_clim)
     return oceclim, ocemean
 
-def compute_ice_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, icevars = 'sithic sivolu siconc'.split(), year_clim = None):
+def compute_ice_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, icevars = 'sithic sivolu siconc'.split(), year_clim = None,
+                     return_annual = False):
     # variables not in this experiment's output (e.g. hfxerr, only with the SI3 process
     # diagnostics) are saved as NaN, so that they are not looked for again at every update
     absent = [v for v in icevars if v not in ds]
@@ -580,9 +594,11 @@ def compute_ice_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ic
         _save_nc(iceclim, cart_out + f'clim_ice_tuning_{exp}{tag}.nc')
         _save_nc(icemean, cart_out + f'mean_ice_tuning_{exp}.nc')
 
+    if return_annual:
+        return iceclim, icemean, _clim_window(ds, year_clim)
     return iceclim, icemean
 
-def compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = None):
+def compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = None, return_annual = False):
     amoc_ts = calc_amoc_ts(ds, plot = False)
     amoc_ts = amoc_ts.groupby('time_counter.year').mean() # year as time coordinate
 
@@ -598,6 +614,8 @@ def compute_amoc_clim(ds, exp, cart_out = cart_out, year_clim = None):
         _save_nc(amoc_mean, cart_out + f'amoc_2d_tuning_{exp}{tag}.nc')
         _save_nc(amoc_ts, cart_out + f'amoc_ts_tuning_{exp}.nc')
 
+    if return_annual:
+        return amoc_mean, amoc_ts, _clim_window(amoc, year_clim)
     return amoc_mean, amoc_ts
 
 def compute_rho_clim(ds, exp, user, cart_exp = cart_exp, cart_out = cart_out, ocevars = 'density Nsquared'.split(), year_clim = None, grid = 'T'):
@@ -1033,10 +1051,6 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             return 'update', None
         return False, None
 
-    def _open_mfdataset_safe(filz, *args, **kwargs):
-        # kept for backward compatibility: file selection + ongoing-run handling now in open_output
-        return open_output(select_files(filz))
-
     def _normalise_amoc_ts(ds):
         if 'time_counter' in ds.dims:
             ds = ds.groupby('time_counter.year').mean()
@@ -1044,41 +1058,16 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             ds = ds['msftyz']
         return ds
 
-    # ── per-domain compute (full dataset) ─────────────────────────────────────
+    # ── per-domain update (read only new years) ───────────────────────────────
 
-    def _compute_atm(exp, us, coupled, vars=atmvars, save=True):
-        ds = _open_mfdataset_safe(filz_atm[exp])
-        return compute_atm_clim(ds, exp, us, cart_exp=cart_exp,
-                                cart_out=cart_out if save else None,
-                                atmvars=vars, year_clim=year_clim)
-
-    def _compute_oce(exp, us, vars=ocevars, save=True):
-        ds = _open_mfdataset_safe(filz_nemo[exp])
-        return compute_oce_clim(ds, exp, us, cart_exp=cart_exp,
-                                cart_out=cart_out if save else None,
-                                ocevars=vars, year_clim=year_clim)
-
-    def _compute_ice(exp, us, vars=icevars, save=True):
-        ds = _open_mfdataset_safe(filz_ice[exp])
-        return compute_ice_clim(ds, exp, us, cart_exp=cart_exp,
-                                cart_out=cart_out if save else None,
-                                icevars=vars, year_clim=year_clim)
-
-    def _compute_amoc(exp, save=True):
-        ds = _open_mfdataset_safe(filz_amoc[exp])
-        return compute_amoc_clim(ds, exp,
-                                cart_out=cart_out if save else None,
-                                year_clim=year_clim)
-
-    # ── per-domain update (read only new years + climatology window) ──────────
-
-    def _update_files(domain, filz, last_saved):
+    def _update_files(domain, filz, last_saved, have_window):
         """
         Decide from the filenames alone which files an update needs.
         Returns (files, first_year, clim_changes), or (None, None, False) if no new data.
-        Files cover the new years and, if the climatology changes, its window:
-        the last CLIM_YEARS years (+1 spare in case the last file is still being written)
-        or year_clim.
+        With a valid annual window cache (have_window) only the new years are read, plus the last
+        saved one (overlap for year-to-year differences, dropped afterwards). Without the cache,
+        if the climatology changes, also its window: the last CLIM_YEARS years (+1 spare in case
+        the last file is still being written) or year_clim.
         """
         last_avail = last_file_year(filz)
         if last_avail is None or last_avail <= last_saved:
@@ -1086,78 +1075,96 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
             return None, None, False
 
         if year_clim is None:
-            clim_first, clim_changes = last_avail - CLIM_YEARS, True
+            clim_first, clim_changes = (None if have_window else last_avail - CLIM_YEARS), True
         elif year_clim[1] > last_saved:
             clim_first, clim_changes = year_clim[0], True
         else:  # fixed climatology window already fully in saved data
             clim_first, clim_changes = None, False
 
-        first = last_saved + 1 if clim_first is None else min(last_saved + 1, clim_first)
+        # one year of overlap: year-to-year differences (oce_imb from heatc) of the first new year need it
+        first = last_saved if clim_first is None else min(last_saved, clim_first)
         files = select_files(filz, first_year=first)
         logging.info(f'[{domain}] Saved data up to {last_saved}, files up to {last_avail}: '
                      f'reading {len(files)} files from {first}')
         return files, first, clim_changes
 
-    def _update_domain(exp, us, domain, clim_old, mean_old, filz,
-                       compute_fn, clim_path, mean_path):
+    def _load_window(spec, clim_old, mean_old):
+        """
+        Annual fields of the climatology window saved at the last update, or None if they cannot be
+        used: fixed year_clim, file missing or unreadable, years different from the last CLIM_YEARS
+        saved years, or variables missing (e.g. added later through missing_vars).
+        """
+        path = spec['win_path']
+        if year_clim is not None or not _nc_readable(path):
+            return None
+        win = xr.load_dataset(path)
+        if spec['amoc']:
+            win = win['msftyz']
+        expected = mean_old.year.values[-CLIM_YEARS:]
+        if not np.array_equal(win.year.values, expected):
+            logging.info(f'  → {os.path.basename(path)}: years do not match the saved series, not used')
+            return None
+        if isinstance(win, xr.Dataset) and isinstance(clim_old, xr.Dataset):
+            missing = [v for v in clim_old.data_vars if v not in win]
+            if missing:
+                logging.info(f'  → {os.path.basename(path)}: no {missing}, not used')
+                return None
+        return win
+
+    def _save(spec, clim, mean, window):
+        _save_nc(clim, spec['clim_path'])
+        _save_nc(mean, spec['mean_path'])
+        if window is not None and year_clim is None:
+            _save_nc(window, spec['win_path'])
+
+    def _clim_from_window(spec, window):
+        clim = window.mean('year')
+        return clim.squeeze() if spec['amoc'] else clim
+
+    def _update_domain(d, spec, clim_old, mean_old):
         last_saved = int(mean_old.year[-1].values)
-        files, first, clim_changes = _update_files(domain, filz, last_saved)
+        window_old = _load_window(spec, clim_old, mean_old)
+        files, first, clim_changes = _update_files(d, spec['files'], last_saved, window_old is not None)
         if files is None:
             return clim_old, mean_old
 
         ds = open_output(files)
         ds = ds.sel(time_counter=slice(f'{first:04d}-01-01', None))  # in case of multi-year files
-        clim_new, mean_new = compute_fn(ds)
+        clim_new, mean_new, window_new = spec['compute'](ds, spec['vars'])
         mean_new = mean_new.sel(year=slice(last_saved + 1, None))
         if mean_new.sizes['year'] == 0:
-            logging.info(f'[{domain}] No new complete years, using existing diagnostics')
+            logging.info(f'[{d}] No new complete years, using existing diagnostics')
             return clim_old, mean_old
-        logging.info(f'[{domain}] Adding years {int(mean_new.year[0])}-{int(mean_new.year[-1])}')
+        logging.info(f'[{d}] Adding years {int(mean_new.year[0])}-{int(mean_new.year[-1])}')
 
-        clim_updated = clim_new if clim_changes else clim_old
+        if window_old is not None:
+            window = xr.concat([window_old, window_new.sel(year=slice(last_saved + 1, None))], dim='year')
+            window = window.isel(year=slice(-CLIM_YEARS, None))
+            clim_updated = _clim_from_window(spec, window)
+        else:
+            window = window_new
+            clim_updated = clim_new if clim_changes else clim_old
         mean_updated = xr.concat([mean_old, mean_new], dim='year')
-        _save_nc(clim_updated, clim_path)
-        _save_nc(mean_updated, mean_path)
+        _save(spec, clim_updated, mean_updated, window)
         return clim_updated, mean_updated
-
-    def _update_amoc(exp, amoc_ts_old, amoc_mean_old, amoc_2d_path, amoc_ts_path):
-        last_saved = int(amoc_ts_old.year[-1].values)
-        files, first, clim_changes = _update_files('amoc', filz_amoc[exp], last_saved)
-        if files is None:
-            return amoc_mean_old, amoc_ts_old
-
-        ds = open_output(files)
-        ds = ds.sel(time_counter=slice(f'{first:04d}-01-01', None))
-        amoc_mean_new, amoc_ts_new = compute_amoc_clim(ds, exp, cart_out=None,
-                                                       year_clim=year_clim)
-        amoc_ts_new = amoc_ts_new.sel(year=slice(last_saved + 1, None))
-        if amoc_ts_new.sizes['year'] == 0:
-            logging.info('[amoc] No new complete years, using existing diagnostics')
-            return amoc_mean_old, amoc_ts_old
-        logging.info(f'[amoc] Adding years {int(amoc_ts_new.year[0])}-{int(amoc_ts_new.year[-1])}')
-
-        amoc_mean_updated = amoc_mean_new if clim_changes else amoc_mean_old
-        amoc_ts_updated = xr.concat([amoc_ts_old, amoc_ts_new], dim='year')
-        _save_nc(amoc_mean_updated, amoc_2d_path)
-        _save_nc(amoc_ts_updated, amoc_ts_path)
-        return amoc_mean_updated, amoc_ts_updated
 
     # ── merge missing vars into existing saved files ───────────────────────────
 
-    def _merge_missing_vars(domain, clim_path, mean_path, missing, compute_fn_missing):
+    def _merge_missing_vars(d, spec, missing):
         """
-        Compute only the missing variables on the full dataset and merge
-        into the existing clim/mean files.
-        compute_fn_missing: callable(missing_vars) -> (clim_new, mean_new)
+        Compute only the missing variables on the full dataset and merge them into the existing
+        clim/mean files. The window cache is left as is: it lacks the new variables, so the next
+        update does not use it and rebuilds it.
         """
-        logging.info(f'[{domain}] Computing missing vars on full dataset: {missing}')
-        clim_old = xr.load_dataset(clim_path)
-        mean_old = xr.load_dataset(mean_path)
+        logging.info(f'[{d}] Computing missing vars on full dataset: {missing}')
+        clim_old = xr.load_dataset(spec['clim_path'])
+        mean_old = spec['post'](xr.load_dataset(spec['mean_path']))
 
         try:
-            clim_new, mean_new = compute_fn_missing(missing)
+            ds = open_output(select_files(spec['files']))
+            clim_new, mean_new, _ = spec['compute'](ds, list(dict.fromkeys(missing + spec['needs'])))
         except FileNotFoundError:
-            logging.warning(f'[{domain}] {missing} cannot be computed: the original output is gone. '
+            logging.warning(f'[{d}] {missing} cannot be computed: the original output is gone. '
                             'Using the saved diagnostics without them')
             return clim_old, mean_old
 
@@ -1170,29 +1177,45 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         mean_keep = [v for v in mean_new.data_vars if v in missing or v[:-2] in missing]
         clim_merged = xr.merge([clim_old, clim_new[clim_keep]])
         mean_merged = xr.merge([mean_old, mean_new[mean_keep]])
-
-        _save_nc(clim_merged, clim_path)
-        _save_nc(mean_merged, mean_path)
+        _save(spec, clim_merged, mean_merged, None)
         return clim_merged, mean_merged
 
-    # ── weights and areas containers ─────────────────────────────────────────────────────
+    def _from_scratch(d, spec):
+        logging.info(f'[{d}] Computing from scratch...')
+        ds = open_output(select_files(spec['files']))
+        clim, mean, window = spec['compute'](ds, spec['vars'])
+        _save(spec, clim, mean, window)
+        return clim, mean
 
-    atmweights_exp = dict()
-    atmareas_exp = dict()
-    oceweights_exp = dict()
-    oceareas_exp = dict()
-    iceweights_exp = dict()
-    iceareas_exp = dict()
+    def _domain_specs(exp, us, ocean_only, coupled):
+        """What differs between the domains: files, variables, compute function, regridding, ..."""
+        tag = _clim_tag(year_clim)
+        kw = dict(cart_exp=cart_exp, cart_out=None, year_clim=year_clim, return_annual=True)
+        base = lambda name, clim, mean: dict(clim_path=cart_out + f'{clim}_{exp}{tag}.nc',
+                                             mean_path=cart_out + f'{mean}_{exp}.nc',
+                                             win_path=cart_out + f'win_{name}_tuning_{exp}.nc',
+                                             amoc=False, needs=[], post=lambda x: x, optional=False)
+        specs = {}
+        if not ocean_only:
+            specs['atm'] = {**base('atm', 'clim_tuning', 'mean_tuning'), 'files': filz_atm[exp], 'vars': atmvars,
+                            'compute': lambda ds, v: compute_atm_clim(ds, exp, us, atmvars=v, **kw),
+                            'regrid': ('ycon', filz_atm)}
+        if coupled:
+            specs['oce'] = {**base('oce', 'clim_oce_tuning', 'mean_oce_tuning'), 'files': filz_nemo[exp], 'vars': ocevars,
+                            'compute': lambda ds, v: compute_oce_clim(ds, exp, us, ocevars=v, **kw),
+                            'regrid': ('bil', filz_nemo), 'needs': ['heatc', 'qt_oce']}  # for oce_imb
+            # siconc and sivolu are needed for hfxerr per ice area and for the mean thickness
+            specs['ice'] = {**base('ice', 'clim_ice_tuning', 'mean_ice_tuning'), 'files': filz_ice[exp], 'vars': icevars,
+                            'compute': lambda ds, v: compute_ice_clim(ds, exp, us, icevars=v, **kw),
+                            'regrid': ('bil', filz_ice), 'needs': ['siconc', 'sivolu'], 'post': repair_ice_mean}
+            specs['amoc'] = {**base('amoc', 'amoc_2d_tuning', 'amoc_ts_tuning'), 'files': filz_amoc[exp], 'vars': None,
+                             'compute': lambda ds, v: compute_amoc_clim(ds, exp, cart_out=None, year_clim=year_clim, return_annual=True),
+                             'regrid': None, 'amoc': True, 'post': _normalise_amoc_ts, 'optional': True}
+        return specs
 
-    # ── output containers for climatologies ─────────────────────────────────────
-    atmmean_exp   = dict()
-    atmclim_exp   = dict()
-    oceclim_exp   = dict()
-    ocemean_exp   = dict()
-    amoc_mean_exp = dict()
-    amoc_ts_exp   = dict()
-    iceclim_exp   = dict()
-    icemean_exp   = dict()
+    # ── output containers ─────────────────────────────────────────────────────
+    DOMAINS = ['atm', 'oce', 'ice', 'amoc']
+    res = {d: {'clim': {}, 'mean': {}, 'weights': {}, 'areas': {}} for d in DOMAINS}
     if density:
         rhoclim_exp = dict()
         rhomean_exp = dict()
@@ -1216,197 +1239,67 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
         if ocean_only:
             logging.info(f'No atm files found for {exp}. Assuming ocean-only')
 
-        coupled_exps.append(True if coupled else False)
+        coupled_exps.append(bool(coupled))
 
-        # ── file paths ────────────────────────────────────────────────────────
-
-        yclim_tag = _clim_tag(year_clim)
-
-        atm_clim_path = cart_out + f'clim_tuning_{exp}{yclim_tag}.nc'
-        atm_mean_path = cart_out + f'mean_tuning_{exp}.nc'
-        oce_clim_path = cart_out + f'clim_oce_tuning_{exp}{yclim_tag}.nc'
-        oce_mean_path = cart_out + f'mean_oce_tuning_{exp}.nc'
-        ice_clim_path = cart_out + f'clim_ice_tuning_{exp}{yclim_tag}.nc'
-        ice_mean_path = cart_out + f'mean_ice_tuning_{exp}.nc'
-        amoc_2d_path  = cart_out + f'amoc_2d_tuning_{exp}{yclim_tag}.nc'
-        amoc_ts_path  = cart_out + f'amoc_ts_tuning_{exp}.nc'
-        rho_clim_path  = cart_out + f'clim_rho_tuning_{exp}{yclim_tag}.nc'
-        rho_mean_path  = cart_out + f'mean_rho_tuning_{exp}.nc'
-
-        # ── per-domain actions ────────────────────────────────────────────────
-        if not do_all_from_scratch:
-            atm_action,  atm_missing  = _needs_compute(atm_clim_path, atm_mean_path, atmvars) if not ocean_only else (False, None)
-            oce_action,  oce_missing  = _needs_compute(oce_clim_path, oce_mean_path, ocevars) if coupled        else (False, None)
-            ice_action,  ice_missing  = _needs_compute(ice_clim_path, ice_mean_path, icevars) if coupled        else (False, None)
-            amoc_action, _            = _needs_compute(amoc_2d_path,  amoc_ts_path)           if coupled        else (False, None)
-            if density:
-                rho_action, _            = _needs_compute(rho_clim_path, rho_mean_path)       if coupled        else (False, None)
-        else:
-            atm_action, atm_missing = ('from_scratch', atmvars) if not ocean_only else (False, None)
-            oce_action, oce_missing = ('from_scratch', ocevars) if coupled        else (False, None)
-            ice_action, ice_missing = ('from_scratch', icevars) if coupled        else (False, None)
-            amoc_action = 'from_scratch' if coupled else False
-            if density: rho_action = 'from_scratch' if coupled else False
-            
-        # ── ATM ───────────────────────────────────────────────────────────────
-        if not ocean_only:
-            if not atm_action:
-                logging.info('[atm] Already computed, reading...')
-                atmclim_exp[exp] = xr.load_dataset(atm_clim_path)
-                atmmean_exp[exp] = xr.load_dataset(atm_mean_path)
-
-            elif atm_action == 'missing_vars':
-                atmclim_exp[exp], atmmean_exp[exp] = _merge_missing_vars(
-                    'atm', atm_clim_path, atm_mean_path,
-                    missing=atm_missing,
-                    compute_fn_missing=lambda vars: compute_atm_clim(
-                        _open_mfdataset_safe(filz_atm[exp]),
-                        exp, us, cart_exp=cart_exp, cart_out=None, atmvars=vars, year_clim=year_clim))
-
-            elif atm_action == 'update':
-                logging.info('[atm] Updating with new data...')
-                clim_old = xr.load_dataset(atm_clim_path)
-                mean_old = xr.load_dataset(atm_mean_path)
-                atmclim_exp[exp], atmmean_exp[exp] = _update_domain(
-                    exp, us, 'atm', clim_old, mean_old,
-                    filz=filz_atm[exp],
-                    compute_fn=lambda ds: compute_atm_clim(
-                        ds, exp, us, cart_exp=cart_exp, cart_out=None, atmvars=atmvars, year_clim=year_clim),
-                    clim_path=atm_clim_path, mean_path=atm_mean_path)
-
-            else:  # 'from_scratch'
-                logging.info('[atm] Computing from scratch...')
-                atmclim_exp[exp], atmmean_exp[exp] = _compute_atm(exp, us, coupled)
-
-            # add weights and areas for smm regridding (from original file, all grids the same)
-            atmweights_exp[exp], atmareas_exp[exp] = _smmregrid_area_weights(filz_atm, exp, 'atm', fallback_file=atm_clim_path)
-
-        # ── OCE ───────────────────────────────────────────────────────────────
-        if coupled:
-            if not oce_action:
-                logging.info('[oce] Already computed, reading...')
-                if os.path.exists(oce_clim_path):
-                    oceclim_exp[exp] = xr.load_dataset(oce_clim_path)
-                    ocemean_exp[exp] = xr.load_dataset(oce_mean_path)
-                else:  # legacy filename
-                    oceclim_exp[exp] = xr.load_dataset(cart_out + f'oce_tuning_{exp}.nc')
-                    ocemean_exp[exp] = None
-
-            elif oce_action == 'missing_vars':
-                oceclim_exp[exp], ocemean_exp[exp] = _merge_missing_vars(
-                    'oce', oce_clim_path, oce_mean_path,
-                    missing=oce_missing,
-                    compute_fn_missing=lambda vars: compute_oce_clim(
-                        _open_mfdataset_safe(filz_nemo[exp]),
-                        exp, us, cart_exp=cart_exp, cart_out=None,
-                        ocevars=vars, year_clim=year_clim))
-
-            elif oce_action == 'update':
-                logging.info('[oce] Updating with new data...')
-                clim_old = xr.load_dataset(oce_clim_path)
-                mean_old = xr.load_dataset(oce_mean_path)
-                oceclim_exp[exp], ocemean_exp[exp] = _update_domain(
-                    exp, us, 'oce', clim_old, mean_old,
-                    filz=filz_nemo[exp],
-                    compute_fn=lambda ds: compute_oce_clim(
-                        ds, exp, us, cart_exp=cart_exp, cart_out=None,
-                        ocevars=ocevars, year_clim=year_clim),
-                    clim_path=oce_clim_path, mean_path=oce_mean_path)
-
-            else:  # 'from_scratch'
-                logging.info('[oce] Computing from scratch...')
-                oceclim_exp[exp], ocemean_exp[exp] = _compute_oce(exp, us)
-
-            # add weights and areas for smm regridding (from original file, all grids the same)
-            oceweights_exp[exp], oceareas_exp[exp] = _smmregrid_area_weights(filz_nemo, exp, 'oce', fallback_file=oce_clim_path, method="bil")
-
-            # ── ICE ───────────────────────────────────────────────────────────
-            if not ice_action:
-                logging.info('[ice] Already computed, reading...')
-                iceclim_exp[exp] = xr.load_dataset(ice_clim_path)
-                icemean_exp[exp] = xr.load_dataset(ice_mean_path)
-
-            elif ice_action == 'missing_vars':
-                iceclim_exp[exp], icemean_exp[exp] = _merge_missing_vars(
-                    'ice', ice_clim_path, ice_mean_path,
-                    missing=ice_missing,
-                    compute_fn_missing=lambda vars: compute_ice_clim(
-                        _open_mfdataset_safe(filz_ice[exp]),
-                        exp, us, cart_exp=cart_exp, cart_out=None,
-                        # siconc is needed to express hfxerr per unit ice area
-                        icevars=list(dict.fromkeys(vars + ['siconc'])), year_clim=year_clim))
-
-            elif ice_action == 'update':
-                logging.info('[ice] Updating with new data...')
-                clim_old = xr.load_dataset(ice_clim_path)
-                mean_old = repair_ice_mean(xr.load_dataset(ice_mean_path))
-                iceclim_exp[exp], icemean_exp[exp] = _update_domain(
-                    exp, us, 'ice', clim_old, mean_old,
-                    filz=filz_ice[exp],
-                    compute_fn=lambda ds: compute_ice_clim(
-                        ds, exp, us, cart_exp=cart_exp, cart_out=None,
-                        icevars=icevars, year_clim=year_clim),
-                    clim_path=ice_clim_path, mean_path=ice_mean_path)
-
-            else:  # 'from_scratch'
-                logging.info('[ice] Computing from scratch...')
-                iceclim_exp[exp], icemean_exp[exp] = _compute_ice(exp, us)
-
-            # add weights and areas for smm regridding (from original file, all grids the same)
-            iceweights_exp[exp], iceareas_exp[exp] = _smmregrid_area_weights(filz_ice, exp, 'ice', fallback_file=ice_clim_path, method="bil")
-
-            ## density
-            if density:
-                if not rho_action:
-                    logging.info('[rho] Already computed, reading...')
-                    rhoclim_exp[exp] = xr.load_dataset(rho_clim_path)
-                    rhomean_exp[exp] = xr.load_dataset(rho_mean_path)
-                elif rho_action == 'from_scratch':
-                    ds = xr.open_mfdataset(filz_rho[exp], decode_times=time_coder, chunks = {'time': 20})
-                    rhoclim_exp[exp], rhomean_exp[exp] = compute_rho_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, year_clim = year_clim)
-                    ds.close()
+        for d, spec in _domain_specs(exp, us, ocean_only, coupled).items():
+            if do_all_from_scratch:
+                action, missing = 'from_scratch', spec['vars']
+            else:
+                action, missing = _needs_compute(spec['clim_path'], spec['mean_path'], spec['vars'])
+            try:
+                if not action:
+                    logging.info(f'[{d}] Already computed, reading...')
+                    clim = xr.load_dataset(spec['clim_path'])
+                    mean = spec['post'](xr.load_dataset(spec['mean_path']))
+                elif action == 'missing_vars':
+                    clim, mean = _merge_missing_vars(d, spec, missing)
+                elif action == 'update':
+                    logging.info(f'[{d}] Updating with new data...')
+                    clim, mean = _update_domain(d, spec, xr.load_dataset(spec['clim_path']),
+                                                spec['post'](xr.load_dataset(spec['mean_path'])))
                 else:
-                    raise ValueError('rho update not implemented')
+                    clim, mean = _from_scratch(d, spec)
+            except Exception as e:
+                if not spec['optional']:
+                    raise
+                logging.info(f'[{d}] Cannot compute: {e}. Skipping')
+                continue
+            res[d]['clim'][exp], res[d]['mean'][exp] = clim, mean
 
-            # ── AMOC ──────────────────────────────────────────────────────────
-            if not amoc_action:
-                if os.path.exists(amoc_ts_path):
-                    logging.info('[amoc] Already computed, reading...')
-                    amoc_ts_exp[exp]   = _normalise_amoc_ts(xr.load_dataset(amoc_ts_path))
-                    amoc_mean_exp[exp] = xr.load_dataset(amoc_2d_path)
+            # weights and areas for smm regridding (from the original output, all grids the same)
+            if spec['regrid'] is not None:
+                method, filelist = spec['regrid']
+                res[d]['weights'][exp], res[d]['areas'][exp] = _smmregrid_area_weights(
+                    filelist, exp, d, fallback_file=spec['clim_path'], method=method)
 
-            elif amoc_action == 'update':
-                logging.info('[amoc] Updating with new data...')
-                amoc_ts_old   = _normalise_amoc_ts(xr.load_dataset(amoc_ts_path))
-                amoc_mean_old = xr.load_dataset(amoc_2d_path)
-                amoc_mean_exp[exp], amoc_ts_exp[exp] = _update_amoc(
-                    exp, amoc_ts_old, amoc_mean_old, amoc_2d_path, amoc_ts_path)
-
-            else:  # 'from_scratch'
-                logging.info('[amoc] Computing from scratch...')
-                try:
-                    amoc_mean_exp[exp], amoc_ts_exp[exp] = _compute_amoc(exp, save=True)
-                except Exception as e:
-                    logging.info(e)
-                    logging.info('Cannot compute AMOC! pass')
+        ## density (no update implemented)
+        if density and coupled:
+            rho_clim_path = cart_out + f'clim_rho_tuning_{exp}{_clim_tag(year_clim)}.nc'
+            rho_mean_path = cart_out + f'mean_rho_tuning_{exp}.nc'
+            rho_action = 'from_scratch' if do_all_from_scratch else _needs_compute(rho_clim_path, rho_mean_path)[0]
+            if not rho_action:
+                logging.info('[rho] Already computed, reading...')
+                rhoclim_exp[exp] = xr.load_dataset(rho_clim_path)
+                rhomean_exp[exp] = xr.load_dataset(rho_mean_path)
+            elif rho_action == 'from_scratch':
+                ds = xr.open_mfdataset(filz_rho[exp], decode_times=time_coder, chunks = {'time': 20})
+                rhoclim_exp[exp], rhomean_exp[exp] = compute_rho_clim(ds, exp, us, cart_exp = cart_exp, cart_out = cart_out, year_clim = year_clim)
+                ds.close()
+            else:
+                raise ValueError('rho update not implemented')
 
     # ── assemble output ───────────────────────────────────────────────────────
     clim_all = dict()
-    clim_all['atm_clim']  = atmclim_exp
-    clim_all['atm_mean']  = atmmean_exp
+    clim_all['atm_clim']    = res['atm']['clim']
+    clim_all['atm_mean']    = res['atm']['mean']
+    clim_all['atm_weights'] = res['atm']['weights']
+    clim_all['atm_areas']   = res['atm']['areas']
     if np.any(coupled_exps):
-        clim_all['oce_clim']  = oceclim_exp
-        clim_all['oce_mean']  = ocemean_exp
-        clim_all['ice_clim']  = iceclim_exp
-        clim_all['ice_mean']  = {exp: repair_ice_mean(ds) for exp, ds in icemean_exp.items()}
-        clim_all['amoc_mean'] = amoc_mean_exp
-        clim_all['amoc_ts'] = amoc_ts_exp
-        clim_all['atm_weights'] = atmweights_exp
-        clim_all['atm_areas'] = atmareas_exp
-        clim_all['oce_weights'] = oceweights_exp
-        clim_all['oce_areas'] = oceareas_exp
-        clim_all['ice_weights'] = iceweights_exp
-        clim_all['ice_areas'] = iceareas_exp
+        for d in ('oce', 'ice'):
+            for k in ('clim', 'mean', 'weights', 'areas'):
+                clim_all[f'{d}_{k}'] = res[d][k]
+        clim_all['amoc_mean'] = res['amoc']['clim']
+        clim_all['amoc_ts']   = res['amoc']['mean']
         if density:
             clim_all['rho_mean'] = rhomean_exp
             clim_all['rho_clim'] = rhoclim_exp
@@ -2609,20 +2502,64 @@ def _panel_grid(n, ncols, w = 5.2, h = 3.6):
     return fig, axs[:n]
 
 
-def _fig_exp_legend(fig, exps, colors, patches = False):
-    """One legend for the whole figure, to the right of the panels."""
+REF_RANGES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ref_ranges.yaml')
+BAND_STYLE = {'target': dict(color = 'grey', alpha = 0.25, label = 'reference range'),
+              'pd_ref': dict(color = 'khaki', alpha = 0.45, label = 'PD obs, reference only')}
+
+def load_ref_ranges(ref_ranges = None):
+    """
+    Reference ranges for the bands: a dict as in ref_ranges.yaml, or the path of such a yaml file.
+    None = ref_ranges.yaml next to this module. Missing file -> no bands (warning).
+    """
+    if isinstance(ref_ranges, dict):
+        return ref_ranges
+    path = ref_ranges or REF_RANGES_FILE
+    if not os.path.exists(path):
+        logging.warning(f'Reference ranges file {path} not found: no bands')
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+def _ref_band(ax, var, ref_ranges, exp_type = 'PI', imbalance = 0.):
+    """
+    Draw the reference band of var on ax: grey if there is a range for exp_type, light yellow for the PD
+    range in a PI run without a PI range. toa_net is shifted by -imbalance. Returns the style key or None.
+    """
+    entry = (ref_ranges or {}).get(var)
+    if not entry:
+        return None
+    if exp_type in entry:
+        lo, hi = entry[exp_type]; kind = 'target'
+    elif exp_type == 'PI' and 'PD' in entry:
+        lo, hi = entry['PD']; kind = 'pd_ref'
+    else:
+        return None
+    if var == 'toa_net' and imbalance:
+        lo, hi = lo - imbalance, hi - imbalance
+    style = BAND_STYLE[kind]
+    ax.axhspan(float(lo), float(hi), color = style['color'], alpha = style['alpha'], lw = 0, zorder = 0)
+    return kind
+
+def _fig_exp_legend(fig, exps, colors, patches = False, bands = ()):
+    """One legend for the whole figure, to the right of the panels; bands: style keys of the bands drawn."""
     if patches:
         handles = [Patch(facecolor = to_rgba(c, 0.5), edgecolor = c, label = exp_label(e)) for e, c in zip(exps, colors)]
     else:
         handles = [plt.Line2D([], [], color = c, label = exp_label(e)) for e, c in zip(exps, colors)]
+    for kind in ('target', 'pd_ref'):
+        if kind in bands:
+            st = BAND_STYLE[kind]
+            handles.append(Patch(facecolor = to_rgba(st['color'], st['alpha']), edgecolor = 'none', label = st['label']))
     fig.legend(handles = handles, loc = 'upper left', bbox_to_anchor = (1.0, 0.98), frameon = False,
                fontsize = 9 if EXP_LABELS else 11)
 
 
-def plot_component_ts(clim_plot, comp, exps, colors = None, rolling = None, cart_out = cart_out, ncols = None):
+def plot_component_ts(clim_plot, comp, exps, colors = None, rolling = None, cart_out = cart_out, ncols = None,
+                      ref_ranges = None, exp_type = 'PI', imbalance = 0.):
     """
     One figure per component: a panel per variable with the annual global-mean time series of all exps
-    (rolling mean if rolling is set). Returns the figure, or None if no variable is available.
+    (rolling mean if rolling is set). Reference bands from ref_ranges (dict, see load_ref_ranges; None or {}
+    = no bands). Returns the figure, or None if no variable is available.
     """
     if colors is None:
         colors = get_colors(exps)
@@ -2632,7 +2569,9 @@ def plot_component_ts(clim_plot, comp, exps, colors = None, rolling = None, cart
         return None
     ncols = ncols or (2 if comp == 'ice' else 3)
     fig, axs = _panel_grid(len(series), ncols)
+    bands = set()
     for ax, (domain, var, sdict) in zip(axs, series):
+        bands.add(_ref_band(ax, var, ref_ranges, exp_type, imbalance))
         for exp, col in zip(exps, colors):
             if exp not in sdict:
                 continue
@@ -2643,7 +2582,7 @@ def plot_component_ts(clim_plot, comp, exps, colors = None, rolling = None, cart
         ax.set_title(var_label(var, domain = domain), fontsize = 10)
         ax.set_xlabel('')
         ax.grid(alpha = 0.3)
-    _fig_exp_legend(fig, exps, colors)
+    _fig_exp_legend(fig, exps, colors, bands = bands)
     roll = f' ({rolling}-yr rolling mean)' if rolling else ''
     fig.suptitle(f'{comp}: global-mean time series{roll}')
     fig.tight_layout(rect = (0, 0, 1, 0.97))
@@ -2652,13 +2591,14 @@ def plot_component_ts(clim_plot, comp, exps, colors = None, rolling = None, cart
 
 
 def plot_component_box(clim_plot, comp, exps, colors = None, box_years = None, year_clim = None, ref_exp = None,
-                       cart_out = cart_out, ncols = None):
+                       cart_out = cart_out, ncols = None, ref_ranges = None, exp_type = 'PI', imbalance = 0.):
     """
     One figure per component: a panel per variable with a boxplot of the annual global means of each exp
     (absolute values). Years used, as for the climatologies: year_clim=(y0, y1) if given, else the last
     box_years (default CLIM_YEARS = 20) of each exp. An explicit box_years wins over year_clim. Box = interquartile range, black line = median,
     white dot = mean, whiskers = 1.5 IQR. Runs shorter than box_years use all their years and show n
-    under their box. If ref_exp is among exps, its median is drawn as a dashed line.
+    under their box. If ref_exp is among exps, its median is drawn as a dashed line. Reference bands from
+    ref_ranges, as in plot_component_ts.
 
     Returns (fig, stats): stats is a DataFrame with n, years, mean, std, median and linear trend
     (per century) of each exp and variable over the same years. Also saved as csv next to the figure.
@@ -2681,7 +2621,9 @@ def plot_component_box(clim_plot, comp, exps, colors = None, box_years = None, y
     fig, axs = _panel_grid(len(series), ncols, w = max(4.5, 0.75 * len(exps) + 1.5))
     rows = []
     pos = np.arange(len(exps))
+    bands = set()
     for ax, (domain, var, sdict) in zip(axs, series):
+        bands.add(_ref_band(ax, var, ref_ranges, exp_type, imbalance))
         ticklabels = []
         for i, (exp, col) in enumerate(zip(exps, colors)):
             s = sdict.get(exp)
@@ -2712,7 +2654,7 @@ def plot_component_box(clim_plot, comp, exps, colors = None, box_years = None, y
         ax.set_xlim(-0.6, len(exps) - 0.4)
         ax.set_title(var_label(var, domain = domain), fontsize = 10)
         ax.grid(axis = 'y', alpha = 0.3)
-    _fig_exp_legend(fig, exps, colors, patches = True)
+    _fig_exp_legend(fig, exps, colors, patches = True, bands = bands)
     ref_txt = f'; dashed: {ref_exp} median' if ref_exp in exps else ''
     fig.suptitle(f'{comp}: annual global means, {win_txt}{ref_txt}')
     fig.tight_layout(rect = (0, 0, 1, 0.97))
@@ -2733,7 +2675,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                        plot_map_oce_vars = ['tos', 'zos', 'sos'], plot_map_ice_vars = ['siconc', 'sithic', 'snvolu'],
                        ongoing = [], do_all_from_scratch = False, time_window = None,
                        exp_labels = None, components = 'all', plot_types = 'all', box_years = None,
-                       loglevel=logging.INFO):
+                       obs_bands = True, ref_ranges = None, loglevel=logging.INFO):
     """
     Runs all multi-exps diagnostics.
 
@@ -2757,6 +2699,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
         'maps'       lat-lon maps of the plot_map_*_vars in the component; AMOC section for ocean.
     box_years: number of final years used in the boxplots (inside time_window if set). None (default) = same
         years as the climatologies: year_clim if given, else the last CLIM_YEARS (20).
+    obs_bands: draw reference bands in the time-series and boxplot panels (grey: range for exp_type;
+        light yellow: PD observations shown in PI runs, reference only).
+    ref_ranges: yaml file (or dict) with the ranges; None = ref_ranges.yaml next to check_run.py.
     The figures are also returned grouped as clim_all['figs'][(component, plot_type)].
     """
     logging.basicConfig(level=loglevel, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -2764,6 +2709,8 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     EXP_LABELS = dict(exp_labels or {})
     components = _as_list(components, COMPONENTS, 'components')
     plot_types = _as_list(plot_types, PLOT_TYPES, 'plot_types')
+    bands_kw = dict(ref_ranges = load_ref_ranges(ref_ranges) if obs_bands else {},
+                    exp_type = exp_type, imbalance = imbalance or 0.)
 
     if cart_out is None:
         raise ValueError('cart_out not specified!')
@@ -2821,11 +2768,11 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
 
         if 'timeseries' in plot_types:
             _add(comp, 'timeseries', plot_component_ts(clim_plot, comp, exps_ts, colors = colors_ts,
-                                                       rolling = rolling, cart_out = cart_out_figs))
+                                                       rolling = rolling, cart_out = cart_out_figs, **bands_kw))
 
         if 'boxplot' in plot_types:
             fig, box_df = plot_component_box(clim_plot, comp, exps_ts, colors = colors_ts, box_years = box_years,
-                                            year_clim = year_clim, ref_exp = ref_exp, cart_out = cart_out_figs)
+                                            year_clim = year_clim, ref_exp = ref_exp, cart_out = cart_out_figs, **bands_kw)
             _add(comp, 'boxplot', fig)
             box_stats.append(box_df)
 
@@ -2933,6 +2880,9 @@ def main(config_path = None):
     plot_diffref = config.get('plot_diffref', False)
     param_map = config.get('param_map', {})
     skip_first_year = config.get('skip_first_year', False)
+    exp_type = config.get('exp_type', 'PD')
+    obs_bands = config.get('obs_bands', True)
+    ref_ranges = config.get('ref_ranges')   # yaml file with the reference bands; None = ref_ranges.yaml
     
 
     if user is None:
@@ -2946,7 +2896,8 @@ def main(config_path = None):
     logging.info(f"Cart exp: {cart_exp}")
     logging.info(f"Cart out: {cart_out}")
 
-    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year)
+    clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year,
+                                    exp_type=exp_type, obs_bands=obs_bands, ref_ranges=ref_ranges)
 
     return clim_all, figs
     

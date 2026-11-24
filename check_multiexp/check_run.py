@@ -187,6 +187,41 @@ def get_colors(exps):
     else:
         return colorz + get_spectral_colors(len(exps)-len(colorz))
 
+def parse_exp_labels(exp_labels):
+    """
+    Split exp_labels into ({exp: description}, {exp: color}). Each value is either a string (the
+    description) or a dict with optional 'label' and 'color' (any matplotlib color), e.g.
+        {'AA01': {'label': 'PALEORCA2, 3 ice steps', 'color': 'orange'}, 'xa08': 'ORCA2 reference'}
+    """
+    labels, colors = {}, {}
+    for exp, val in (exp_labels or {}).items():
+        if isinstance(val, dict):
+            unknown = set(val) - {'label', 'color'}
+            if unknown:
+                raise ValueError(f'exp_labels[{exp!r}]: unknown keys {sorted(unknown)}, use label and color')
+            if val.get('label'):
+                labels[exp] = val['label']
+            if val.get('color'):
+                colors[exp] = val['color']
+        elif val:
+            labels[exp] = str(val)
+    return labels, colors
+
+def resolve_colors(exps, exp_colors = None):
+    """
+    One color per exp, in the order of exps: the color in exp_colors if given, otherwise the next color of
+    the default palette (get_colors) that no other exp uses, so that two runs never share a color.
+    """
+    exp_colors = exp_colors or {}
+    for exp, col in exp_colors.items():
+        try:
+            to_rgba(col)
+        except ValueError:
+            raise ValueError(f'exp_labels[{exp!r}]: {col!r} is not a matplotlib color')
+    taken = {to_rgba(c) for e, c in exp_colors.items() if e in exps}
+    palette = iter(c for c in get_colors(list(exps) * 2) if to_rgba(c) not in taken)
+    return [exp_colors[e] if e in exp_colors else next(palette) for e in exps]
+
 def get_spectral_colors(n):
     """
     Extract n evenly spaced colors from the Spectral colormap.
@@ -769,6 +804,9 @@ def _check_time_axis(ds):
             "context_oifs.xml): set ref_year <= first year and rerun the experiment.")
     return ds
 
+class NoOutputYet(RuntimeError):
+    """The run has no complete output period yet (only file still being written): skipped, not an error."""
+
 def open_output(files, chunks = {'time_counter': 240}):
     """
     Open a sorted list of ECE4 output files (one or more years each) along time_counter.
@@ -794,7 +832,7 @@ def open_output(files, chunks = {'time_counter': 240}):
         logging.info(f'{files[-1]} is locked (still being written by the run?), dropping it')
         files = files[:-1]
     if len(files) == 1 and _is_locked(files[0]):
-        raise OSError(11, f'Cannot read {files[0]}: it is locked (still being written) and it is the only '
+        raise NoOutputYet(f'Cannot read {files[0]}: it is locked (still being written) and it is the only '
                           'output file found. Wait for the next year to be written, or leave this experiment out for now.')
 
     # the last file of a running experiment can exist with 0 time records: XIOS writes the
@@ -817,6 +855,8 @@ def open_output(files, chunks = {'time_counter': 240}):
         elif bad != files_tried[-1]:
             reason = ('it is not the last file, so it is probably corrupted '
                       '(e.g. a crashed or restarted leg): check or remove it.')
+        if len(files_tried) == 1 and not after_drop:
+            return NoOutputYet(f'Cannot read {bad} (NetCDF/HDF error {err.errno}): {reason}')
         return OSError(err.errno, f'Cannot read {bad} (NetCDF/HDF error {err.errno}): {reason}')
 
     try:
@@ -851,7 +891,7 @@ def _complete_years(ds, files, nrec = 12):
     if incomplete.size == 0:
         return ds
     if incomplete.size == yrs.size:
-        raise ValueError(f'No complete year yet in {os.path.dirname(files[0])} '
+        raise NoOutputYet(f'No complete year yet in {os.path.dirname(files[0])} '
                          f'({", ".join(f"{y}: {c} months" for y, c in zip(yrs, counts))}): '
                          'wait for the first year to be completed, or leave this experiment out for now.')
     for y, c in zip(yrs, counts):
@@ -1259,6 +1299,9 @@ def read_output(exps, user=None, read_again=[], cart_exp=cart_exp, cart_out=cart
                                                 spec['post'](xr.load_dataset(spec['mean_path'])))
                 else:
                     clim, mean = _from_scratch(d, spec)
+            except NoOutputYet as e:
+                logging.warning(f'{exp} [{d}]: no complete output yet, skipped ({e})')
+                continue
             except Exception as e:
                 if not spec['optional']:
                     raise
@@ -1535,34 +1578,35 @@ def plot_amoc_vs_gtas(clim_all, exps = None, cart_out = cart_out, exp_type = 'PI
     return fig
 
 
-def plot_imbalance(clim_all, cart_out = cart_out, rolling = None):
+def plot_imbalance(clim_all, cart_out = cart_out, rolling = None, exps = None, colors = None):
+    """Gregory-style plots of the energy budget closure. exps/colors: order and colors of the runs."""
     atmmean = create_ds_exp(clim_all['atm_mean'])
     ocemean = create_ds_exp(clim_all['oce_mean'])
 
     figs = []
-    fig = plot_custom_greg(atmmean['atm_imb'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'atm imbalance (>0 -> source)', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=True, rolling = rolling)
+    fig = plot_custom_greg(atmmean['atm_imb'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'atm imbalance (>0 -> source)', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=True, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['atm_imb_bottino'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'atm imbalance (>0 -> source, no prsn over ocean)', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=True, rolling = rolling)
+    fig = plot_custom_greg(atmmean['atm_imb_bottino'], ocemean['oce_imb'], (-0.1, 0.1), (-0.1, 0.1), xlabel = 'atm imbalance (>0 -> source, no prsn over ocean)', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=True, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb_bottino'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], atmmean['atm_imb_bottino'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'atm imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)    
 
-    fig = plot_custom_greg(ocemean['tos'], ocemean['oce_imb'], None, (-0.1, 0.1), xlabel = 'GTOS', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+    fig = plot_custom_greg(ocemean['tos'], ocemean['oce_imb'], None, (-0.1, 0.1), xlabel = 'GTOS', ylabel = 'oce imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['tas'], 2.5e6*atmmean['E-P'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'E-P energy flux [W/m2] (>0 -> energy needed for sustaining the E-P imbalance)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], 2.5e6*atmmean['E-P'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'E-P energy flux [W/m2] (>0 -> energy needed for sustaining the E-P imbalance)', cart_out = cart_out, symmetric_axes=False, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)
 
-    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, None, xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+    fig = plot_custom_greg(atmmean['tas'], atmmean['E-P'], None, None, xlabel = 'GTAS', ylabel = 'E-P (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling, exps = exps, colors = colors)
     figs.append(fig)
     
     if 'interface_imb' in ocemean:
-        fig = plot_custom_greg(atmmean['tas'], ocemean['interface_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'interface imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling)
+        fig = plot_custom_greg(atmmean['tas'], ocemean['interface_imb'], None, (-0.1, 0.1), xlabel = 'GTAS', ylabel = 'interface imbalance (>0 -> source)', cart_out = cart_out, symmetric_axes=False, rolling = rolling, exps = exps, colors = colors)
         figs.append(fig)
 
     return figs
@@ -2688,6 +2732,9 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
         Maps and zonal means still use the saved climatologies (year_clim). The returned clim_all is not cut.
     exp_labels: optional {exp: short description}, shown in the legends as 'exp: description'
         (e.g. {'xb09': '3 ice steps (NEMO 3600 s)'}). Experiments without a description keep their id.
+        A value can also be a dict with 'label' and/or 'color', e.g. {'xa08': {'label': 'reference',
+        'color': 'black'}}: the run gets that color in all figures; runs without a color take the next
+        free color of the default palette. An explicit colors=[...] list still wins.
     components: 'all' or a list among COMPONENTS ('radiation', 'surface', 'energy', 'ocean', 'ice').
         Each component is a group of variables (edit COMPONENTS to change them).
     plot_types: 'all' or a list among PLOT_TYPES:
@@ -2706,7 +2753,7 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     """
     logging.basicConfig(level=loglevel, format='%(asctime)s - %(levelname)s - %(message)s')
     global EXP_LABELS
-    EXP_LABELS = dict(exp_labels or {})
+    EXP_LABELS, exp_colors = parse_exp_labels(exp_labels)
     components = _as_list(components, COMPONENTS, 'components')
     plot_types = _as_list(plot_types, PLOT_TYPES, 'plot_types')
     bands_kw = dict(ref_ranges = load_ref_ranges(ref_ranges) if obs_bands else {},
@@ -2744,7 +2791,13 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
     if 'amoc_ts' in clim_all: coupled = True
 
     if colors is None:
-        colors = get_colors(exps)
+        colors = resolve_colors(exps, exp_colors)
+    # runs without any atmospheric output yet (e.g. just started) are left out of the plots
+    no_data = [exp for exp in exps if clim_all['atm_mean'].get(exp) is None]
+    if no_data:
+        logging.warning(f'No output yet for {no_data}: left out of the plots')
+        colors = [col for exp, col in zip(exps, colors) if exp not in no_data]
+        exps = [exp for exp in exps if exp not in no_data]
     # time series restricted to time_window (maps/zonal use clim_all, unchanged)
     clim_plot, exps_ts, colors_ts = _clim_for_plots(clim_all, exps, colors, time_window)
 
@@ -2786,7 +2839,8 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                                                         exp_type = exp_type, year_clim = year_clim,
                                                         colors = colors_ts, rolling = rolling))
             elif comp == 'energy' and has_atm_var('atm_imb') and has_oce_var('oce_imb'):
-                _add(comp, 'gregory', plot_imbalance(clim_plot, cart_out = cart_out_figs, rolling = rolling))
+                _add(comp, 'gregory', plot_imbalance(clim_plot, cart_out = cart_out_figs, rolling = rolling,
+                                                             exps = exps_ts, colors = colors_ts))
 
         if 'zonal' in plot_types:
             if comp == 'radiation':
@@ -2881,6 +2935,7 @@ def main(config_path = None):
     param_map = config.get('param_map', {})
     skip_first_year = config.get('skip_first_year', False)
     exp_type = config.get('exp_type', 'PD')
+    exp_labels = config.get('exp_labels')   # {exp: description} or {exp: {label: ..., color: ...}}
     obs_bands = config.get('obs_bands', True)
     ref_ranges = config.get('ref_ranges')   # yaml file with the reference bands; None = ref_ranges.yaml
     
@@ -2897,7 +2952,8 @@ def main(config_path = None):
     logging.info(f"Cart out: {cart_out}")
 
     clim_all, figs = compare_multi_exps(exps, user = user, read_again = read_again, cart_exp = cart_exp, cart_out = cart_out, imbalance = imbalance, ref_exp = ref_exp, plot_param=plot_param, plot_diffref=plot_diffref, param_map=param_map,skip_first_year=skip_first_year,
-                                    exp_type=exp_type, obs_bands=obs_bands, ref_ranges=ref_ranges)
+                                    exp_type=exp_type, obs_bands=obs_bands, ref_ranges=ref_ranges,
+                                    exp_labels=exp_labels)
 
     return clim_all, figs
     

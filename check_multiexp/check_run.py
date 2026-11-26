@@ -45,7 +45,7 @@ def _debug_check(fig_or_figs, label):
             logging.error(f'[DEBUG-PLOT] CRASHED: {tag} -> {e}')
             raise
 
-datadir = '../data/'
+datadir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', '')   # CERES, ERA5 reference files
 cart_out = './output/'
 cart_exp = '/ec/res4/scratch/{}/ece4/'
 
@@ -1841,144 +1841,125 @@ def plot_custom_greg(x_ds, y_ds, x_target, y_target, color_var = None, exps = No
 
     return fig
 
-def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted = False, datadir = datadir, cart_out = cart_out, colors = None, ylim = None):
-    """
-    plot_anomalies: plots anomalies wrt CERES
-    weighted: weights for cosine of latitude
-    """
-    ceresmean = xr.open_dataset(datadir + 'ceres_clim_2001-2011.nc')
+ZONAL_RAD_VARS = ['rsut', 'rlut', 'toa_net', 'rsdt']
+ZONAL_CERES_VARS = {'rsut': 'toa_sw_all_mon', 'rlut': 'toa_lw_all_mon', 'toa_net': 'toa_net_all_mon', 'rsdt': 'solar_mon'}
 
+
+def _zonal_rad_panel(atm_clim, exps, ref, ref_name, plot_anomalies, weighted, colors, ylim, ncols = 2,
+                     varlist = ZONAL_RAD_VARS):
+    """
+    Panels of zonal means of all exps against a reference, one per variable of varlist (default: the TOA
+    radiation rsut, rlut, toa_net, rsdt): ref(var, lat) -> DataArray on the model latitudes. With
+    plot_anomalies, exp - ref (zero line); otherwise the full fields with the reference in black.
+    Returns fig and the shown exps.
+    """
     atmclim = create_ds_exp(atm_clim)
     atmclim = atmclim.groupby('lat').mean()
     atmclim['toa_net'] = atmclim.rsdt - (atmclim.rsut + atmclim.rlut)
-
-    if weighted:
-        weights = np.cos(np.deg2rad(atmclim.lat)).compute()
-
-    #####
-
-    ceres_vars = ['toa_lw_all_mon', 'toa_sw_all_mon', 'toa_net_all_mon', 'solar_mon']
-    okvars = ['rlut', 'rsut', 'toa_net', 'rsdt']
-
-    figs = []
-    for var, cvar in zip(okvars, ceres_vars):
-        fig, ax = plt.subplots(figsize=(12, 8))
-        y_ref = ceresmean.interp(lat = atmclim.lat)[cvar]
-        
-        if plot_anomalies: ax.axhline(0., color = 'lightgrey')
-        if colors is None: colors = get_colors(exps)
-
-        for exp, col in zip(exps, colors):
-            y = atmclim.sel(exp = exp)[var]
-            if plot_anomalies: y -= y_ref
-            if weighted: y *= weights
-
-            ax.plot(atmclim.lat, y, label = exp_label(exp), color = col)
-            ax.text(100, y.values[-1], exp, fontsize=12, ha='right', color = col)
-            
-        if not plot_anomalies: 
-            if weighted: y_ref *= weights
-            ax.plot(atmclim.lat, y_ref, label = 'CERES', color = 'black')
-            ax.text(100, y_ref.values[-1], 'CERES', fontsize=12, ha='right', color = 'black')
-
-        ax.set_xlabel('lat')
-        add = ''
-        if weighted: add = ' (weighted with cosine)'
-        ax.set_title(var_label(var, units = False))
-        if plot_anomalies:
-            ax.set_ylabel(f'{var_label(var, units = False)} bias wrt CERES 2001-2011 (W/m2)'+add)
-        else:
-            ax.set_ylabel(f'{var_label(var, units = False)} vs CERES 2001-2011 (W/m2)'+add)
-
-        plt.xlim(-90, 105)
-        if ylim is not None: plt.ylim(ylim)
-        #plt.legend()
-
-        add = ''
-        if not plot_anomalies: add = '_full'
-        if weighted: add += '_weighted'
-
-        name = '-'.join(exps)
-        logging.info(f'Saving figure: {name}{add}')
-        fig.savefig(cart_out + f'check_radiation_vs_ceres_{name}{add}.pdf')
-        figs.append(fig)
-
-    return figs
-
-def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies=True, weighted=False, 
-                             datadir=None, cart_out=None, colors=None, ylim=None):
-    """
-    plot_anomalies: plots anomalies wrt reference experiment
-    weighted: weights for cosine of latitude
-    """
-
-    if cart_out is None:
-        cart_out = './'
-
-    atmclim = create_ds_exp(atm_clim)
-    atmclim = atmclim.groupby('lat').mean()
-    atmclim['toa_net'] = atmclim.rsdt - (atmclim.rsut + atmclim.rlut)
-
-    if weighted:
-        weights = np.cos(np.deg2rad(atmclim.lat)).compute()
-
-    okvars = ['rlut', 'rsut', 'toa_net', 'rsdt']
-
-    figs = []
+    w = np.cos(np.deg2rad(atmclim.lat)).compute() if weighted else 1.
     if colors is None:
         colors = get_colors(exps)
-
-    for var in okvars:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        y_ref = atmclim.sel(exp=ref_exp)[var]
-
-        if plot_anomalies:
-            ax.axhline(0., color='lightgrey')
-
-        for exp, col in zip(exps, colors):
-            if exp == ref_exp:
-                continue  # non serve confrontare il ref con se stesso
-            y = atmclim.sel(exp=exp)[var]
+    shown = [(e, c) for e, c in zip(exps, colors) if e != ref_name]
+    scale = {'pr': (86400., 'mm day$^{-1}$'), 'prsn': (86400., 'mm day$^{-1}$'), 'evspsbl': (86400., 'mm day$^{-1}$')}
+    fig, axs = _panel_grid(len(varlist), ncols)
+    for ax, var in zip(axs, varlist):
+        k, units = scale.get(var, (1., VAR_UNITS.get(var, 'W m$^{-2}$')))
+        w_ = w * k
+        y_ref = ref(var, atmclim.lat)
+        for exp, col in shown:
+            y = atmclim.sel(exp = exp)[var]
             if plot_anomalies:
                 y = y - y_ref
-            if weighted:
-                y = y * weights
-
-            ax.plot(atmclim.lat, y, label=exp_label(exp), color=col)
-            ax.text(float(atmclim.lat.max()), y.values[-1], exp, fontsize=12, ha='right', color=col)
-
-        if not plot_anomalies:
-            if weighted:
-                y_ref = y_ref * weights
-            ax.plot(atmclim.lat, y_ref, label=f'{ref_exp} (ref)', color='black', lw=2)
-            ax.text(float(atmclim.lat.max()), y_ref.values[-1], ref_exp, fontsize=12, ha='right', color='black')
-
-        ax.set_xlabel('Latitude')
-        add = ''
-        if weighted:
-            add = ' (weighted with cosine)'
-        ax.set_title(var_label(var, units = False))
+            ax.plot(atmclim.lat, y * w_, color = col, lw = 1.2)
         if plot_anomalies:
-            ax.set_ylabel(f'{var_label(var, units = False)} bias wrt {ref_exp} (W/m2)' + add)
+            ax.axhline(0., color = 'grey', lw = 0.8)
         else:
-            ax.set_ylabel(f'{var_label(var, units = False)} vs {ref_exp} (W/m2)' + add)
-
-        plt.xlim(-90, 105)
+            ax.plot(atmclim.lat, y_ref * w_, color = 'black', lw = 1.6)
+        ax.set_xlim(-90, 90)
+        ax.set_xticks(np.arange(-90, 91, 30))
         if ylim is not None:
-            plt.ylim(ylim)
+            ax.set_ylim(ylim)
+        title = var_label(var, units = False)
+        ax.set_title(f'{title} − {ref_name}' if plot_anomalies else title, fontsize = 10)
+        ax.set_ylabel(units + (' × cos(lat)' if weighted else ''))
+        ax.grid(alpha = 0.3)
+    for ax in axs[-ncols:]:
+        ax.set_xlabel('lat')
+    return fig, shown
 
-        add = ''
-        if not plot_anomalies:
-            add = '_full'
-        if weighted:
-            add += '_weighted'
 
-        name = '-'.join(exps)
-        figname = f'check_radiation_vs_ref_{ref_exp}_{var}_{name}{add}.pdf'
-        fig.savefig(os.path.join(cart_out, figname))
-        figs.append(fig)
+def _zonal_rad_finish(fig, shown, ref_name, ref_in_legend, what, fname):
+    exps_l, cols_l = [e for e, _ in shown], [c for _, c in shown]
+    _fig_exp_legend(fig, exps_l, cols_l)
+    if ref_in_legend:   # reference line, in black, added to the shared legend
+        leg = fig.legends[-1]
+        handles = leg.legend_handles + [plt.Line2D([], [], color = 'black', lw = 1.6, label = ref_name)]
+        leg.remove()
+        fig.legend(handles = handles, loc = 'upper center', bbox_to_anchor = (0.5, 0.0), frameon = False,
+                   ncol = min(2, len(handles)), fontsize = 9 if EXP_LABELS else 11)
+    fig.suptitle(what)
+    fig.tight_layout(rect = (0, 0, 1, 1 - 0.4 / fig.get_figheight()))     # room for the suptitle
+    logging.info(f'Saving figure: {fname}')
+    fig.savefig(fname, bbox_inches = 'tight')
+    return fig
 
-    return figs
+
+def plot_zonal_fluxes_vs_ceres(atm_clim, exps, plot_anomalies = True, weighted = False, datadir = datadir, cart_out = cart_out,
+                               colors = None, ylim = None):
+    """
+    Zonal TOA radiation of all exps against CERES 2001-2011, in one 2x2 figure (rsut, rlut, toa_net, rsdt).
+    plot_anomalies: exp - CERES (default) or full fields with CERES in black; weighted: × cos(lat).
+    Saved as check_radiation_vs_ceres_<exps>[_full][_weighted].pdf. Returns the figure.
+    """
+    ceresmean = xr.open_dataset(datadir + 'ceres_clim_2001-2011.nc')
+    ref = lambda var, lat: ceresmean.interp(lat = lat)[ZONAL_CERES_VARS[var]]
+    fig, shown = _zonal_rad_panel(atm_clim, exps, ref, 'CERES', plot_anomalies, weighted, colors, ylim)
+    add = ('' if plot_anomalies else '_full') + ('_weighted' if weighted else '')
+    what = 'zonal TOA radiation, ' + ('bias wrt CERES 2001-2011' if plot_anomalies else 'vs CERES 2001-2011')
+    return _zonal_rad_finish(fig, shown, 'CERES', not plot_anomalies, what,
+                             cart_out + f"check_radiation_vs_ceres_{'-'.join(exps)}{add}.pdf")
+
+
+ERA5_ZONAL_FILE = 'era5_zonal_clim_1991-2020.nc'
+
+
+def plot_zonal_vs_era5(atm_clim, exps, varlist = ('tas', 'pr'), plot_anomalies = True, datadir = datadir, cart_out = cart_out,
+                       colors = None, ylim = None):
+    """
+    Zonal means of near-surface temperature and precipitation of all exps against ERA5 1991-2020 (present day:
+    a pre-industrial run is expected to be about 1 K colder), one panel per variable.
+    plot_anomalies: exp - ERA5 (default) or full fields with ERA5 in black.
+    Reference file: <datadir>/era5_zonal_clim_1991-2020.nc (zonal means of the ERA5 monthly means, 0.25 deg,
+    from the AQUA observations on HPC2020). Saved as check_zonal_vs_era5_<exps>[_full].pdf. Returns the figure.
+    """
+    era5 = xr.open_dataset(os.path.join(datadir, ERA5_ZONAL_FILE))
+    varlist = [v for v in varlist if v in era5]
+    if not varlist:
+        return None
+    ref = lambda var, lat: era5[var].interp(lat = lat)
+    fig, shown = _zonal_rad_panel(atm_clim, exps, ref, 'ERA5', plot_anomalies, False, colors, ylim, varlist = varlist)
+    what = 'zonal means, ' + ('bias wrt ERA5 1991-2020' if plot_anomalies else 'vs ERA5 1991-2020')
+    return _zonal_rad_finish(fig, shown, 'ERA5', not plot_anomalies, what,
+                             cart_out + f"check_zonal_vs_era5_{'-'.join(exps)}{'' if plot_anomalies else '_full'}.pdf")
+
+
+def plot_zonal_fluxes_vs_ref(atm_clim, exps, ref_exp, plot_anomalies = True, weighted = False,
+                             datadir = None, cart_out = None, colors = None, ylim = None):
+    """
+    Zonal TOA radiation of all exps against the reference experiment, in one 2x2 figure (rsut, rlut, toa_net, rsdt).
+    plot_anomalies: exp - ref_exp (default; ref_exp itself left out) or full fields with ref_exp in black;
+    weighted: × cos(lat). Saved as check_radiation_vs_ref_<ref_exp>_<exps>[_full][_weighted].pdf. Returns the figure.
+    """
+    if cart_out is None:
+        cart_out = './'
+    atmclim = create_ds_exp(atm_clim).groupby('lat').mean()
+    atmclim['toa_net'] = atmclim.rsdt - (atmclim.rsut + atmclim.rlut)
+    ref = lambda var, lat: atmclim.sel(exp = ref_exp)[var]
+    fig, shown = _zonal_rad_panel(atm_clim, exps, ref, ref_exp, plot_anomalies, weighted, colors, ylim)
+    add = ('' if plot_anomalies else '_full') + ('_weighted' if weighted else '')
+    what = 'zonal TOA radiation, ' + (f'difference from {exp_label(ref_exp)}' if plot_anomalies else f'vs {exp_label(ref_exp)}')
+    return _zonal_rad_finish(fig, shown, ref_exp, not plot_anomalies, what,
+                             os.path.join(cart_out, f"check_radiation_vs_ref_{ref_exp}_{'-'.join(exps)}{add}.pdf"))
 
 def plot_zonal_fluxes_by_param(atm_clim, ref_exp, param_map, cart_out, 
                                plot_anomalies=True, weighted=False, colors=None, ylim=None):
@@ -2121,19 +2102,23 @@ def plot_map_var(clim, weights, exps, var, ref_exp = None, cart_out = cart_out, 
 
 
 def plot_map_vars_panel(items, exps, comp = '', ref_exp = None, cart_out = cart_out, last_years = None,
-                        projection = ccrs.Robinson(), nlevels = 10, w = 5.2, h = 2.9):
+                        projection = ccrs.Robinson(), nlevels = 12, ncols = 2, w = 6.0, h = 3.3):
     """
-    All the maps of a component in one figure: a row per variable, a column per exp
-    (or per exp - ref_exp when ref_exp is given), with one colour bar per row.
+    Maps of a component: one figure per variable, the exps (or exp - ref_exp when ref_exp is given)
+    on a grid of `ncols` columns, the variable name as title and one shared colour bar below.
+    Each panel title gives the area-weighted mean of the field.
     items: list of (clim, weights, var), clim/weights being the dicts by exp of one domain
-    (atm, oce or ice). Saved as check_maps_<comp>_<exps>.pdf. Returns the figure, or None.
+    (atm, oce or ice). All the figures go, one per page, to check_maps_<comp>_<exps>.pdf.
+    Returns the list of figures.
     """
+    from matplotlib.backends.backend_pdf import PdfPages
+
     if ref_exp is not None and ref_exp not in exps:
         logging.info(f'WARNING: {ref_exp} not in exps! plotting absolute values')
         ref_exp = None
     plot_exps = [e for e in exps if e != ref_exp] if ref_exp is not None else list(exps)
     if not items or not plot_exps:
-        return None
+        return []
 
     def get_field(clim, weights, exp, var):
         da = clim[exp][var]
@@ -2143,7 +2128,16 @@ def plot_map_vars_panel(items, exps, comp = '', ref_exp = None, cart_out = cart_
             da = da.mean('year')
         return Regridder(weights = weights[exp]).regrid(da)
 
-    rows = []
+    def area_mean(f):
+        v = f.values
+        wgt = np.broadcast_to(np.cos(np.deg2rad(f.lat.values))[:, None], v.shape)
+        ok = np.isfinite(v)
+        return float(np.sum(v[ok] * wgt[ok]) / np.sum(wgt[ok])) if ok.any() else np.nan
+
+    figs = []
+    ncols = min(ncols, len(plot_exps))
+    nrows = int(np.ceil(len(plot_exps) / ncols))
+    what = 'climatology' if ref_exp is None else f'difference from {ref_exp}'
     for clim, weights, var in items:
         try:
             fields = {e: get_field(clim, weights, e, var) for e in plot_exps}
@@ -2153,27 +2147,25 @@ def plot_map_vars_panel(items, exps, comp = '', ref_exp = None, cart_out = cart_
         except Exception as err:
             logging.warning(f'map of {var} skipped: {err}')
             continue
-        rows.append((var, clim[plot_exps[0]][var], fields))
-    if not rows:
-        return None
+        da0 = clim[plot_exps[0]][var]
 
-    ncols = len(plot_exps)
-    fig, axes = plt.subplots(len(rows), ncols, figsize = (w * ncols + 1.2, h * len(rows) + 0.6),
-                             subplot_kw = {'projection': projection}, squeeze = False,
-                             constrained_layout = True)
-    for i, (var, da0, fields) in enumerate(rows):
         vals = [f.values for f in fields.values()]
         if ref_exp is not None:   # symmetric scale for differences
             vmax = max(float(np.nanpercentile(np.abs(v), 98)) for v in vals) or 1e-12
             levels = mticker.MaxNLocator(nlevels, symmetric = True).tick_values(-vmax, vmax)
             cmap = 'RdBu_r'
         else:
-            vmin_, vmax_ = min(float(np.nanmin(v)) for v in vals), max(float(np.nanmax(v)) for v in vals)
+            vmin_ = min(float(np.nanpercentile(v, 1)) for v in vals)
+            vmax_ = max(float(np.nanpercentile(v, 99)) for v in vals)
             if vmax_ <= vmin_:
                 vmax_ = vmin_ + 1e-12
             levels, cmap = mticker.MaxNLocator(nlevels).tick_values(vmin_, vmax_), 'viridis'
-        for j, exp in enumerate(plot_exps):
-            ax, f = axes[i, j], fields[exp]
+
+        fig, axes = plt.subplots(nrows, ncols, figsize = (w * ncols, h * nrows + 1.4),
+                                 subplot_kw = {'projection': projection}, squeeze = False,
+                                 constrained_layout = True)
+        for ax, exp in zip(axes.flat, plot_exps):
+            f = fields[exp]
             data, lon = add_cyclic_point(f.values, coord = f.lon)
             cf = ax.contourf(lon, f.lat, data, levels = levels, cmap = cmap, extend = 'both',
                              transform = ccrs.PlateCarree())
@@ -2183,17 +2175,25 @@ def plot_map_vars_panel(items, exps, comp = '', ref_exp = None, cart_out = cart_
                          alpha = 0.5, linestyle = '--',
                          xlocs = mticker.FixedLocator(np.arange(-180, 181, 60)),
                          ylocs = mticker.FixedLocator(np.arange(-90, 91, 30)))
-            if i == 0:
-                ax.set_title(exp_label(exp) if ref_exp is None else f'{exp} − {ref_exp}', fontsize = 10)
-        label = var_label(var, da0) if ref_exp is None else f'Δ {var_label(var, da0)}'
-        cb = fig.colorbar(cf, ax = axes[i, :], orientation = 'vertical', shrink = 0.85, pad = 0.01)
-        cb.set_label(label, fontsize = 8)
-        cb.ax.tick_params(labelsize = 7)
+            title = exp if ref_exp is None else f'{exp} \u2212 {ref_exp}'
+            ax.set_title(f'{title}   (mean {area_mean(f):.3g})', fontsize = 10)
+        for ax in axes.flat[len(plot_exps):]:
+            ax.set_visible(False)
 
-    what = 'climatology' if ref_exp is None else f'difference from {exp_label(ref_exp)}'
-    fig.suptitle(f'{comp}: maps, {what}' if comp else f'maps, {what}', fontsize = 12)
-    fig.savefig(cart_out + f"check_maps_{comp or 'vars'}_{'-'.join(exps)}.pdf", bbox_inches = 'tight')
-    return fig
+        label = var_label(var, da0) if ref_exp is None else f'\u0394 {var_label(var, da0)}'
+        cb = fig.colorbar(cf, ax = list(axes.flat[:len(plot_exps)]), location = 'bottom',
+                          shrink = 0.7, aspect = 40, pad = 0.02)
+        cb.set_label(label, fontsize = 10)
+        cb.ax.tick_params(labelsize = 8)
+        fig.suptitle(f'{var_label(var, da0, units = False)} ({var}): {what}', fontsize = 13,
+                     fontweight = 'bold')
+        figs.append(fig)
+
+    if figs:
+        with PdfPages(cart_out + f"check_maps_{comp or 'vars'}_{'-'.join(exps)}.pdf") as pdf:
+            for fig in figs:
+                pdf.savefig(fig, bbox_inches = 'tight')
+    return figs
 
 
 def plot_amoc_2d_all(amoc_mean, exps, cart_out = cart_out):
@@ -2342,7 +2342,7 @@ def plot_zonal_vars_panel(atmclim, exps, varlist, comp = '', ref_exp = None, car
     _fig_exp_legend(fig, [e for e, _ in shown], [c for _, c in shown])
     what = 'zonal means' if ref_exp is None else f'zonal means, difference from {exp_label(ref_exp)}'
     fig.suptitle(f'{comp}: {what}' if comp else what)
-    fig.tight_layout()
+    fig.tight_layout(rect = (0, 0, 1, 1 - 0.4 / fig.get_figheight()))     # room for the suptitle
     fig.savefig(cart_out + f"check_zonal_{comp or 'vars'}_{'-'.join(exps)}.pdf", bbox_inches = 'tight')
     return fig
 
@@ -3176,10 +3176,13 @@ def compare_multi_exps(exps, user = None, read_again = [], cart_exp = '/ec/res4/
                 _add(comp, 'zonal', plot_zonal_fluxes_vs_ceres(clim_all['atm_clim'], exps = exps,
                                                                cart_out = cart_out_figs, colors = colors))
             if comp == 'surface':
-                _add(comp, 'zonal', plot_zonal_tas_vs_ref(clim_all['atm_clim'], exps = exps, ref_exp = ref_exp,
-                                                          cart_out = cart_out_figs, colors = colors))
+                _add(comp, 'zonal', plot_zonal_vs_era5(clim_all['atm_clim'], exps = exps, cart_out = cart_out_figs,
+                                                       colors = colors))
+            # surface: tas is the first panel of the zonal figure
             zvars = [var for var in atmvars
-                     if var in cvars and var in plot_zonal_vars and var not in 'rsut rlut rsdt tas'.split()]
+                     if var in cvars and var in plot_zonal_vars and var not in 'rsut rlut rsdt'.split()]
+            if 'tas' in zvars:
+                zvars = ['tas'] + [v for v in zvars if v != 'tas']
             if zvars:
                 logging.info(f'Plotting zonal means for {comp}: {zvars}')
                 _add(comp, 'zonal', plot_zonal_vars_panel(clim_all['atm_clim'], exps = exps, varlist = zvars,
